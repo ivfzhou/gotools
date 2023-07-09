@@ -24,7 +24,7 @@ func Distinct[E comparable](sli []E) []E {
 	return list
 }
 
-func Filter[E, T any](sli []E, fn func(E) bool) []E {
+func Filter[E any](sli []E, fn func(E) bool) []E {
 	list := make([]E, 0, len(sli))
 	for i := range sli {
 		if fn(sli[i]) {
