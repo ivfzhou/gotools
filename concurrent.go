@@ -15,9 +15,8 @@ package gotools
 import (
 	"context"
 	"fmt"
-	"runtime"
+	"reflect"
 	"sync"
-	"time"
 )
 
 // RunConcurrently 并发运行 fn。
@@ -183,7 +182,11 @@ func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wa
 // Run 并发将jobs传递给proc函数运行，一旦发生error便立即返回该error，并结束其它协程。
 // 当ctx被cancel时也将立即返回，此时返回cancel时的error。
 // 当proc运行发生panic将立即返回该panic字符串化的error。
+// proc为nil时函数将panic。
 func Run[T any](ctx context.Context, proc func(context.Context, T) error, jobs ...T) error {
+	if proc == nil {
+		panic("the proc cannot nil")
+	}
 	if len(jobs) <= 0 {
 		return nil
 	}
@@ -191,11 +194,6 @@ func Run[T any](ctx context.Context, proc func(context.Context, T) error, jobs .
 	defer cancel(nil)
 	wg := &sync.WaitGroup{}
 	for i := range jobs {
-		select {
-		case <-ctx.Done():
-			return context.Cause(ctx)
-		default:
-		}
 		wg.Add(1)
 		go func(t *T) {
 			defer wg.Done()
@@ -218,16 +216,18 @@ func Run[T any](ctx context.Context, proc func(context.Context, T) error, jobs .
 	return context.Cause(ctx)
 }
 
-// StartProcess 分阶段依次运行steps函数处理jobs数据。每个阶段并发运行，每个job将会依次给steps处理，
-// 即一个job前面step运行完毕，后面step才会开始运行该job。
-// 一当step发生error或者panic StartProcess便立即返回，且结束其他所有开启的协程。
-// 当ctx被cancel时也将立即返回，此时返回context.Cause()的error。
+// StartProcess 将每个jobs依次递给steps函数处理。一旦某个step发生error或者panic，StartProcess立即返回该error，
+// 并及时结束其他StartProcess开启的goroutine，也不开启新的goroutine运行step。
+// 一个job最多在一个step中运行一次，且一个job一定是依次序递给steps，前一个step处理完毕才会给下一个step处理。
+// 每个step并发运行jobs。
+// StartProcess等待所有goroutine运行结束才返回，或者ctx被cancel时也将及时结束开启的goroutine后返回。
+// StartProcess因被ctx cancel而结束时函数返回nil。若steps中含有nil StartProcess将会panic。
 func StartProcess[T any](ctx context.Context, jobs []T, steps ...func(context.Context, T) error) error {
-	if len(steps) <= 0 {
+	if len(steps) <= 0 || len(jobs) <= 0 {
 		return nil
 	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(context.Canceled)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	ch := make(chan *T, len(jobs))
 	go func() {
 		for i := range jobs {
@@ -235,72 +235,92 @@ func StartProcess[T any](ctx context.Context, jobs []T, steps ...func(context.Co
 		}
 		close(ch)
 	}()
-	errChs := make([]<-chan error, len(steps))
+	errChans := make([]<-chan error, len(steps))
 	var nextCh <-chan *T = ch
 	for i, step := range steps {
-		nextCh, errChs[i] = startOneProcess(ctx, step, nextCh)
+		nextCh, errChans[i] = startOneProcess(ctx, step, cancel, nextCh)
 	}
-	return <-Listen(ctx, errChs...)
+
+	for _, errCh := range errChans {
+		if err := <-errCh; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// Listen 监听所有chan，一旦有一个chan激活便立即将T发送给函数返回的ch，之后ch被close。
-// 若所有chan都未曾激活且都close了，或者ctx被cancel了，则ch被close。
-func Listen[T any](ctx context.Context, chans ...<-chan T) <-chan T {
-	ch := make(chan T, 1)
+// Listen 监听chans，一旦有一个chan激活便立即将T发送给ch，并close ch。
+// 若所有chan都未曾激活（chan是nil也认为未激活）且都close了，或者ctx被cancel了，则ch被close。
+// 若同时chan被激活和ctx被cancel，则随机返回一个激活发送给chan的值。
+func Listen[T any](ctx context.Context, chans ...<-chan T) (ch <-chan T) {
+	tch := make(chan T, 1)
+	ch = tch
+	if len(chans) <= 0 {
+		close(tch)
+		return
+	}
+	select {
+	case <-ctx.Done():
+		close(tch)
+		return
+	default:
+	}
 	go func() {
+		scs := make([]reflect.SelectCase, 0, len(chans))
+		for i := range chans {
+			if chans[i] == nil {
+				continue
+			}
+			scs = append(scs, reflect.SelectCase{
+				Dir:  reflect.SelectRecv,
+				Chan: reflect.ValueOf(chans[i]),
+			})
+		}
+		scs = append(scs, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(ctx.Done()),
+		})
 		for {
-			select {
-			case <-ctx.Done():
-				close(ch)
-				return
-			default:
-			}
-			newChans := make([]<-chan T, 0, len(chans))
-			for _, v := range chans {
-				if v == nil {
-					continue
-				}
-				select {
-				case t, ok := <-v:
-					if ok {
-						ch <- t
-						close(ch)
-						return
-					}
-				default:
-					newChans = append(newChans, v)
-				}
-			}
-			if len(chans) <= 0 {
-				close(ch)
+			if len(scs) <= 1 {
+				close(tch)
 				return
 			}
-			chans = newChans
-			runtime.Gosched()
-			time.Sleep(100 * time.Millisecond)
+			chosen, recv, ok := reflect.Select(scs)
+			if chosen == len(scs)-1 {
+				close(tch)
+				return
+			}
+			if !ok {
+				scs = append(scs[:chosen], scs[chosen+1:]...)
+			} else {
+				reflect.ValueOf(tch).Send(recv)
+				close(tch)
+				return
+			}
 		}
 	}()
 	return ch
 }
 
-func startOneProcess[T any](ctx context.Context, f func(context.Context, T) error, dataCh <-chan *T) (<-chan *T, <-chan error) {
-	ctx, cancel := context.WithCancelCause(ctx)
-	ch := make(chan *T, cap(dataCh))
+func startOneProcess[T any](ctx context.Context, f func(context.Context, T) error, notify func(),
+	dataChan <-chan *T) (<-chan *T, <-chan error) {
+	ctx, cancel := context.WithCancel(ctx)
+	ch := make(chan *T, cap(dataChan))
 	errCh := make(chan error, 1)
 	go func() {
 		once := &sync.Once{}
 		wg := &sync.WaitGroup{}
 		defer func() {
 			wg.Wait()
+			cancel()
 			close(ch)
-			once.Do(func() { close(errCh) })
+			close(errCh)
 		}()
 		for {
 			select {
 			case <-ctx.Done():
-				go once.Do(func() { errCh <- context.Cause(ctx); close(errCh) })
 				return
-			case data, ok := <-dataCh:
+			case data, ok := <-dataChan:
 				if !ok {
 					return
 				}
@@ -309,20 +329,21 @@ func startOneProcess[T any](ctx context.Context, f func(context.Context, T) erro
 					defer wg.Done()
 					select {
 					case <-ctx.Done():
-						go once.Do(func() { errCh <- context.Cause(ctx); close(errCh) })
 						return
 					default:
 					}
 					defer func() {
 						if v := recover(); v != nil {
 							err := fmt.Errorf("%v", v)
-							cancel(err)
-							go once.Do(func() { errCh <- err; close(errCh) })
+							cancel()
+							notify()
+							once.Do(func() { errCh <- err })
 						}
 					}()
 					if err := f(ctx, *t); err != nil {
-						cancel(err)
-						go once.Do(func() { errCh <- err; close(errCh) })
+						cancel()
+						notify()
+						once.Do(func() { errCh <- err })
 					} else {
 						ch <- t
 					}

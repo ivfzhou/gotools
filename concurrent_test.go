@@ -519,3 +519,53 @@ func ExampleStartProcess() {
 		// return err
 	}
 }
+
+func TestListen(t *testing.T) {
+	err1 := make(chan error, 1)
+	err2 := make(chan error, 1)
+	err3 := make(chan error, 1)
+	errChans := []<-chan error{
+		err1,
+		err2,
+		err3,
+	}
+	ctx := context.Background()
+	err := errors.New("")
+	go func() {
+		time.Sleep(10 * time.Second)
+		t.Log("send error to err1")
+		err1 <- err
+	}()
+	if err != <-gotools.Listen(ctx, errChans...) {
+		t.Error("err not equal")
+		return
+	}
+	t.Log("pass")
+
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		time.Sleep(10 * time.Second)
+		t.Log("cancel")
+		cancel()
+	}()
+	if nil != <-gotools.Listen(ctx, errChans...) {
+		t.Error("err is not nil")
+		return
+	}
+	t.Log("pass")
+
+	go func() {
+		time.Sleep(10 * time.Second)
+		t.Log("close err1")
+		close(err1)
+		t.Log("close err1")
+		close(err2)
+		t.Log("close err3")
+		close(err3)
+	}()
+	if nil != <-gotools.Listen(context.Background(), errChans...) {
+		t.Error("err is not nil")
+		return
+	}
+	t.Log("pass")
+}
