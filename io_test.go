@@ -1,10 +1,21 @@
+/*
+ * Copyright (c) 2023 ivfzhou
+ * gotools is licensed under Mulan PSL v2.
+ * You can use this software according to the terms and conditions of the Mulan PSL v2.
+ * You may obtain a copy of Mulan PSL v2 at:
+ *          http://license.coscl.org.cn/MulanPSL2
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PSL v2 for more details.
+ */
+
 package gotools_test
 
 import (
 	"bytes"
 	"io"
 	"math/rand"
-	"os"
 	"sync"
 	"testing"
 
@@ -12,14 +23,12 @@ import (
 )
 
 func TestWriteAtReader(t *testing.T) {
-	testFile := `testdata/go1.21.1.linux-amd64.tar.gz`
 	writeAtCloser, readCloser := gotools.WriteAtReader()
 	wg := &sync.WaitGroup{}
 
-	file, err := os.ReadFile(testFile)
-	if err != nil {
-		t.Error(err)
-		return
+	file := make([]byte, 1024*1024*20+10)
+	for i := range file {
+		file[i] = byte(rand.Intn(257))
 	}
 
 	wg.Add(1)
