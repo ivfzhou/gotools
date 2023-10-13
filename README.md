@@ -29,6 +29,11 @@ func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wa
 // 若同时chan被激活和ctx被cancel，则随机返回一个激活发送给chan的值。
 func Listen[T any](ctx context.Context, chans ...<-chan T) <-chan T
 
+// WriteAtReader 获取一个WriterAt和Reader对象，其中WriterAt用于并发写入数据，而与此同时Reader对象同时读取出已经写入好的数据。
+// WriterAt写入完毕后调用Close，则Reader会全部读取完后结束读取。
+// WriterAt发生的error会传递给Reader返回。
+// 该接口是特定为一个目的实现————服务器分片下载数据中转给客户端下载，提高中转数据效率。
+func WriteAtReader() (WriteAtCloser, io.ReadCloser)
 ```
 
 `RunParallel`
