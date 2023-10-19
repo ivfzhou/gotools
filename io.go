@@ -60,6 +60,22 @@ func WriteAtReader() (WriteAtCloser, io.ReadCloser) {
 	return &writeClose{wr}, &readClose{wr}
 }
 
+// CopyFile 复制文件。
+func CopyFile(src, dest string) error {
+	srcFile, err := os.OpenFile(src, os.O_RDONLY, 0400)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+	destFile, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+	_, err = io.Copy(destFile, srcFile)
+	return err
+}
+
 func (wc *writeClose) Close() error {
 	wc.writeErrOnce.Do(func() { close(wc.writeErr) })
 	return nil
