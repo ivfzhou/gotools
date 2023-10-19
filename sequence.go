@@ -12,7 +12,47 @@
 
 package gotools
 
-import "reflect"
+import (
+	"fmt"
+	"reflect"
+	"strings"
+)
+
+type Number interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
+		~uintptr | ~float32 | ~float64
+}
+
+// Max 求最大值。
+func Max[T Number](x, y T) T {
+	if y > x {
+		return y
+	}
+	return x
+}
+
+// Min 求最小值。
+func Min[T Number](x, y T) T {
+	if y < x {
+		return y
+	}
+	return x
+}
+
+// Join 拼接元素返回字符串。
+func Join[T fmt.Stringer](arr []T, sep string) string {
+	sb := strings.Builder{}
+	for i := 0; i < len(arr)-1; i++ {
+		sb.WriteString(arr[i].String())
+		sb.WriteString(sep)
+	}
+	if len(arr) > 0 {
+		sb.WriteString(arr[len(arr)-1].String())
+		sb.WriteString(sep)
+	}
+	return sb.String()
+}
 
 func Convert[E, T any](sli []E, fn func(E) T) []T {
 	list := make([]T, len(sli))

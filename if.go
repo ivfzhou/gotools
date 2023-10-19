@@ -51,42 +51,6 @@ var (
 	}()
 )
 
-type Number interface {
-	~int | ~int8 | ~int16 | ~int32 | ~int64 |
-		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
-		~uintptr | ~float32 | ~float64
-}
-
-// Max 求最大值。
-func Max[T Number](x, y T) T {
-	if y > x {
-		return y
-	}
-	return x
-}
-
-// Min 求最小值。
-func Min[T Number](x, y T) T {
-	if y < x {
-		return y
-	}
-	return x
-}
-
-// Join 拼接元素返回字符串。
-func Join[T fmt.Stringer](arr []T, sep string) string {
-	sb := strings.Builder{}
-	for i := 0; i < len(arr)-1; i++ {
-		sb.WriteString(arr[i].String())
-		sb.WriteString(sep)
-	}
-	if len(arr) > 0 {
-		sb.WriteString(arr[len(arr)-1].String())
-		sb.WriteString(sep)
-	}
-	return sb.String()
-}
-
 // IPv4ToNum ipv4字符串转数字。
 func IPv4ToNum(ip string) uint32 {
 	res := uint32(0)
@@ -113,14 +77,6 @@ func IPv4ToStr(ip uint32) string {
 	s3 := strconv.FormatUint(res>>8&0xff, 10)
 	s4 := strconv.FormatUint(res>>0&0xff, 10)
 	return fmt.Sprintf("%s.%s.%s.%s", s1, s2, s3, s4)
-}
-
-// GCD x与y的最大公约数
-func GCD(x, y int) int {
-	for y != 0 {
-		x, y = y, x%y
-	}
-	return x
 }
 
 // IsIPv4 判断是否是ipv4。

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 )
 
 // RunConcurrently 并发运行 fn。
@@ -300,6 +301,20 @@ func Listen[T any](ctx context.Context, chans ...<-chan T) (ch <-chan T) {
 		}
 	}()
 	return ch
+}
+
+// RunPeriodically 依次运行fn，每个fn之间至少间隔period时间。add用于添加fn。
+func RunPeriodically(period time.Duration) (add func(fn func())) {
+	fnChan := make(chan func())
+	lastAccess := time.Time{}
+	go func() {
+		for f := range fnChan {
+			time.Sleep(period - time.Since(lastAccess))
+			f()
+			lastAccess = time.Now()
+		}
+	}()
+	return func(fn func()) { fnChan <- fn }
 }
 
 func startOneProcess[T any](ctx context.Context, f func(context.Context, T) error, notify func(),
