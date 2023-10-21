@@ -13,6 +13,8 @@
 package gotools
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -74,6 +76,56 @@ func CopyFile(src, dest string) error {
 	defer destFile.Close()
 	_, err = io.Copy(destFile, srcFile)
 	return err
+}
+
+// NewMultiReader 依次从reader读出数据并写入writer中，并close reader。
+// 返回send用于添加reader，readSize表示需要从reader读出的字节数，order用于表示记录读取序数并传递给writer，若读取字节数对不上则返回error。
+// 返回wait用于等待所有reader读完，若读取发生error，wait返回该error，并结束读取。
+// 务必等所有reader都已添加给send后再调用wait。
+// 该函数可用于需要非同一时间多个读取流和一个写入流的工作模型。
+func NewMultiReader(ctx context.Context, writer func(order int, p []byte)) (
+	send func(readSize, order int, reader io.ReadCloser), wait func() error) {
+
+	ctx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+	once := &sync.Once{}
+	waitOnce := &sync.Once{}
+	wg := &sync.WaitGroup{}
+	var err error
+	return func(readSize, order int, reader io.ReadCloser) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case <-ctx.Done():
+					once.Do(func() { errCh <- fmt.Errorf("context canceled: %v", ctx.Err()); close(errCh) })
+					return
+				default:
+				}
+				p := make([]byte, readSize)
+				n, err := io.ReadFull(reader, p)
+				if err != nil || n != len(p) {
+					cancel()
+					once.Do(func() {
+						errCh <- fmt.Errorf("reading bytes occur error, want read size %d, actual size: %d: %v", len(p), n, err)
+						close(errCh)
+					})
+				}
+				_ = reader.Close()
+				writer(order, p)
+			}()
+		},
+		func() error {
+			waitOnce.Do(func() {
+				wg.Wait()
+				select {
+				case err = <-errCh:
+				default:
+					once.Do(func() { close(errCh); cancel() })
+				}
+			})
+			return err
+		}
 }
 
 func (wc *writeClose) Close() error {

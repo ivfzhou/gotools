@@ -14,6 +14,7 @@ package gotools_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"math/rand"
 	"sync"
@@ -21,6 +22,31 @@ import (
 
 	"gitee.com/ivfzhou/gotools"
 )
+
+type bytesReader struct {
+	*bytes.Reader
+	closed int
+}
+
+func (r *bytesReader) Close() error { r.closed++; return nil }
+
+func ExampleWriteAtReader() {
+	writeAtCloser, readCloser := gotools.WriteAtReader()
+
+	// 并发写入数据
+	go func() {
+		writeAtCloser.WriteAt(nil, 0)
+	}()
+	// 写完close
+	writeAtCloser.Close()
+
+	// 同时读出写入的数据
+	go func() {
+		readCloser.Read(nil)
+	}()
+	// 读完close
+	readCloser.Close()
+}
 
 func TestWriteAtReader(t *testing.T) {
 	writeAtCloser, readCloser := gotools.WriteAtReader()
@@ -93,20 +119,46 @@ func TestWriteAtReader(t *testing.T) {
 	}
 }
 
-func ExampleWriteAtReader() {
-	writeAtCloser, readCloser := gotools.WriteAtReader()
-
-	// 并发写入数据
-	go func() {
-		writeAtCloser.WriteAt(nil, 0)
-	}()
-	// 写完close
-	writeAtCloser.Close()
-
-	// 同时读出写入的数据
-	go func() {
-		readCloser.Read(nil)
-	}()
-	// 读完close
-	readCloser.Close()
+func TestNewMultiReader(t *testing.T) {
+	readerNum := 10000
+	length := 10
+	m := make(map[int]struct{}, readerNum)
+	lock := &sync.Mutex{}
+	writer := func(order int, p []byte) {
+		if len(p) != 10 {
+			t.Error("p len not match", len(p))
+		}
+		s := string(p)
+		if s != "0123456789" {
+			t.Error("bytes unexpected", s)
+		}
+		lock.Lock()
+		_, ok := m[order]
+		if ok {
+			t.Error("unexpected order", order)
+		}
+		m[order] = struct{}{}
+		lock.Unlock()
+	}
+	ctx := context.Background()
+	rs := make([]*bytesReader, readerNum)
+	send, wait := gotools.NewMultiReader(ctx, writer)
+	for i := 0; i < readerNum; i++ {
+		reader := &bytesReader{Reader: bytes.NewReader([]byte("0123456789"))}
+		rs[i] = reader
+		send(length, i, reader)
+	}
+	err := wait()
+	if err != nil {
+		t.Error("don't want error", err)
+	}
+	for i := range rs {
+		if rs[i].closed != 1 {
+			t.Error("reader doesn't close", rs[i].closed)
+		}
+	}
+	count := len(m)
+	if count != readerNum {
+		t.Error("reader numbers not match", count)
+	}
 }
