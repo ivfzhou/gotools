@@ -17,5 +17,8 @@ func GCD(x, y int) int {
 	for y != 0 {
 		x, y = y, x%y
 	}
+	if x < 0 {
+		return -x
+	}
 	return x
 }

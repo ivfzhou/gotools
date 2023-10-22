@@ -17,6 +17,8 @@ import (
 	"context"
 	"io"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -161,4 +163,27 @@ func TestNewMultiReader(t *testing.T) {
 	if count != readerNum {
 		t.Error("reader numbers not match", count)
 	}
+}
+
+func TestCopyFile(t *testing.T) {
+	fileSize := int64(13)
+	dest := `testdata/copyfile_test`
+	err := gotools.CopyFile(`testdata/copyfile`, dest)
+	if err != nil {
+		t.Error("unexpected error", err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Error("unexpected error", err)
+	}
+	if info.IsDir() {
+		t.Error("not a file")
+	}
+	if info.Name() != filepath.Base(dest) {
+		t.Error("file name mistake", info.Name())
+	}
+	if info.Size() != fileSize {
+		t.Error("file size mistake", info.Size())
+	}
+	_ = os.Remove(dest)
 }

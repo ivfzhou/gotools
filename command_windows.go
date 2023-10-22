@@ -21,7 +21,7 @@ import (
 
 var psConsolePrefixReg = regexp.MustCompile(`^PS [A-Z]:(\\[^\\/:*?"<>|]*?)*?> `)
 
-// RunPSCommand 交互式运行PowerShell命令bin，std 是标准输出数据，estd 是标准错误输出数据。
+// RunPSCommand 交互式运行PowerShell命令bin，std是标准输出数据，estd是标准错误输出数据。
 // Deprecated: 使用RunCommand替代。
 func RunPSCommand(bin string, interactive ...string) (std []byte, estd []byte, err error) {
 	cmd := exec.Command("PowerShell.exe", "-NoLogo", "-NoExit")

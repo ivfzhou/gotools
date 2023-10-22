@@ -1,19 +1,19 @@
 ##### 通用golang函数库
 
 ```golang
-// RunConcurrently 并发运行 fn。
+// RunConcurrently 并发运行fn。
 func RunConcurrently(fn ...func() error) (wait func() error)
 
-// RunSequently  依次运行 fn，当有err时停止后续 fn 运行。
+// RunSequently  依次运行fn，当有err时停止后续fn运行。
 func RunSequently(fn ...func() error) (wait func() error)
 
-// RunParallel 该函数提供同时运行 max 个协程 fn，一旦 fn 有err返回则停止接下来的fn运行。
+// RunParallel 该函数提供同时运行max个协程fn，一旦fn有err返回则停止接下来的fn运行。
 // 朝返回的 add 函数中添加任务，若正在运行的任务数已达到max则会阻塞当前程序。
 // add 函数返回err为任务 fn 返回的第一个err。与 wait 函数返回的err为同一个。
 // 注意请在 add 完所有任务后调用 wait。
 func RunParallel[T any](max int, fn func(T) error) (add func(T) error, wait func() error)
 
-// RunParallelNoBlock 该函数提供同 RunParallel 一样，但是 add 函数不会阻塞。注意请在 add 完所有任务后调用 wait。
+// RunParallelNoBlock 该函数提供同RunParallel一样，但是add函数不会阻塞。注意请在add完所有任务后调用wait。
 func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wait func() error)
 
 // Run 并发将jobs传递给proc函数运行，一旦发生error便立即返回该error，并结束其它协程。

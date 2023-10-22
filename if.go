@@ -14,52 +14,32 @@ package gotools
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-)
-
-var (
-	ipv4Matcher = func() func() *regexp.Regexp {
-		once := sync.Once{}
-		var re *regexp.Regexp
-		return func() *regexp.Regexp {
-			once.Do(func() { re = regexp.MustCompile(`^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$`) })
-			return re
-		}
-	}()
-	ipv6Matcher = func() func() *regexp.Regexp {
-		once := sync.Once{}
-		var re *regexp.Regexp
-		return func() *regexp.Regexp {
-			once.Do(func() {
-				re = regexp.MustCompile(`(^::[0-9a-fA-F]{1,4})|([0-9a-fA-F]{1,4}(:{1,2}[0-9a-fA-F]{1,4}){1,7})$`)
-			})
-			return re
-		}
-	}()
-	macMatcher = func() func() *regexp.Regexp {
-		once := sync.Once{}
-		var re *regexp.Regexp
-		return func() *regexp.Regexp {
-			once.Do(func() {
-				re = regexp.MustCompile(`^[0-9a-fA-F]{2}(-[0-9a-fA-F]{2}){5}$`)
-			})
-			return re
-		}
-	}()
 )
 
 // IPv4ToNum ipv4字符串转数字。
+// 若是非ip地址则返回0。
 func IPv4ToNum(ip string) uint32 {
 	res := uint32(0)
 	arr := strings.Split(ip, ".")
 	if len(arr) == 4 {
-		num0, _ := strconv.ParseUint(arr[0], 10, 32)
-		num1, _ := strconv.ParseUint(arr[1], 10, 32)
-		num2, _ := strconv.ParseUint(arr[2], 10, 32)
-		num3, _ := strconv.ParseUint(arr[3], 10, 32)
+		num0, err := strconv.ParseUint(arr[0], 10, 32)
+		if err != nil || num0 > 255 {
+			return 0
+		}
+		num1, err := strconv.ParseUint(arr[1], 10, 32)
+		if err != nil || num1 > 255 {
+			return 0
+		}
+		num2, err := strconv.ParseUint(arr[2], 10, 32)
+		if err != nil || num2 > 255 {
+			return 0
+		}
+		num3, err := strconv.ParseUint(arr[3], 10, 32)
+		if err != nil || num3 > 255 {
+			return 0
+		}
 		res = uint32(num3)
 		res |= uint32(num2) << 8
 		res |= uint32(num1) << 16
@@ -81,17 +61,83 @@ func IPv4ToStr(ip uint32) string {
 
 // IsIPv4 判断是否是ipv4。
 func IsIPv4(s string) bool {
-	return ipv4Matcher().MatchString(s)
+	arr := strings.Split(s, ".")
+	if len(arr) == 4 {
+		num, err := strconv.ParseUint(arr[0], 10, 32)
+		if err != nil || num > 255 {
+			return false
+		}
+		num, err = strconv.ParseUint(arr[1], 10, 32)
+		if err != nil || num > 255 {
+			return false
+		}
+		num, err = strconv.ParseUint(arr[2], 10, 32)
+		if err != nil || num > 255 {
+			return false
+		}
+		num, err = strconv.ParseUint(arr[3], 10, 32)
+		if err != nil || num > 255 {
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // IsIPv6 判断是否是ipv6。
 func IsIPv6(s string) bool {
-	return ipv6Matcher().MatchString(s)
+	if len(s) <= 0 {
+		return false
+	}
+	compressIndex := strings.Index(s, "::")
+	if compressIndex != strings.LastIndex(s, "::") {
+		return false
+	}
+	if compressIndex > -1 && len(s) > compressIndex+2 && s[compressIndex+2] == '0' {
+		return false
+	}
+	if compressIndex == 0 {
+		s = s[2:]
+	} else if compressIndex > -1 && compressIndex == len(s)-2 {
+		s = s[:len(s)-2]
+	} else if compressIndex > -1 {
+		s = string(append([]byte(s[:compressIndex]), []byte(s[compressIndex+1:])...))
+	}
+	if len(s) <= 0 {
+		return true
+	}
+	arr := strings.Split(s, ":")
+	if len(arr) > 7 || compressIndex > -1 && len(arr) > 7 {
+		return false
+	}
+	for _, v := range arr {
+		if vl := len(v); vl > 4 || vl <= 0 {
+			return false
+		}
+		num, err := strconv.ParseUint(v, 16, 16)
+		if err != nil || num > 0xffff {
+			return false
+		}
+	}
+	return true
 }
 
 // IsMAC 判断是否是mac地址。
 func IsMAC(s string) bool {
-	return macMatcher().MatchString(s)
+	arr := strings.Split(s, "-")
+	if len(arr) != 6 {
+		return false
+	}
+	for _, v := range arr {
+		if len(v) != 2 {
+			return false
+		}
+		num, err := strconv.ParseUint(v, 16, 8)
+		if err != nil || num > 0xff {
+			return false
+		}
+	}
+	return true
 }
 
 // IsIntranet 判断是否是内网IP。

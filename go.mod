@@ -10,6 +10,6 @@
 
 module gitee.com/ivfzhou/gotools
 
-go 1.21
+go 1.18
 
 require golang.org/x/text v0.13.0

@@ -14,15 +14,18 @@ package gotools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
 	"time"
 )
 
-// RunConcurrently 并发运行 fn。
+// RunConcurrently 并发运行fn。
 func RunConcurrently(fn ...func() error) (wait func() error) {
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	var returnErr error
+	errOnce := &sync.Once{}
 	wg := sync.WaitGroup{}
 	wg.Add(len(fn))
 	for _, f := range fn {
@@ -35,25 +38,31 @@ func RunConcurrently(fn ...func() error) (wait func() error) {
 					if err, ok = v.(error); !ok {
 						err = fmt.Errorf("%v", v)
 					}
-					cancel(err)
 				}
+
+				if err != nil && !errors.Is(err, context.Canceled) {
+					errOnce.Do(func() {
+						returnErr = err
+					})
+					cancel()
+				}
+
 			}()
 			select {
 			case <-ctx.Done():
 			default:
-				if err = f(); err != nil {
-					cancel(err)
-				}
+				err = f()
 			}
 		}(f)
 	}
 	return func() error {
 		wg.Wait()
-		return context.Cause(ctx)
+		cancel()
+		return returnErr
 	}
 }
 
-// RunSequently  依次运行 fn，当有err时停止后续 fn 运行。
+// RunSequently  依次运行fn，当有err时停止后续fn运行。
 func RunSequently(fn ...func() error) (wait func() error) {
 	errCh := make(chan error)
 	go func() {
@@ -83,13 +92,15 @@ func RunSequently(fn ...func() error) (wait func() error) {
 	}
 }
 
-// RunParallel 该函数提供同时运行 max 个协程 fn，一旦 fn 有err返回则停止接下来的fn运行。
-// 朝返回的 add 函数中添加任务，若正在运行的任务数已达到max则会阻塞当前程序。
-// add 函数返回err为任务 fn 返回的第一个err。与 wait 函数返回的err为同一个。
-// 注意请在 add 完所有任务后调用 wait。
+// RunParallel 该函数提供同时运行max个协程fn，一旦fn有err返回则停止接下来的fn运行。
+// 朝返回的add函数中添加任务，若正在运行的任务数已达到max则会阻塞当前程序。
+// add函数返回err为任务fn返回的第一个err。与wait函数返回的err为同一个。
+// 注意请在add完所有任务后调用wait。
 func RunParallel[T any](max int, fn func(T) error) (add func(T) error, wait func() error) {
 	limiter := make(chan struct{}, max)
-	ctx, cancel := context.WithCancelCause(context.Background())
+	var returnErr error
+	errOnce := &sync.Once{}
+	ctx, cancel := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}
 	fnWrap := func(data T) {
 		var err error
@@ -100,9 +111,11 @@ func RunParallel[T any](max int, fn func(T) error) (add func(T) error, wait func
 					err = fmt.Errorf("%v", p)
 				}
 			}
-			if err != nil {
-				cancel(err)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				errOnce.Do(func() { returnErr = err })
+				cancel()
 			}
+
 			<-limiter
 			wg.Done()
 		}()
@@ -113,30 +126,32 @@ func RunParallel[T any](max int, fn func(T) error) (add func(T) error, wait func
 		select {
 		case <-ctx.Done():
 			wg.Done()
-			return context.Cause(ctx)
+			return returnErr
 		case limiter <- struct{}{}:
 		}
 		select {
 		case <-ctx.Done():
 			wg.Done()
-			return context.Cause(ctx)
+			return returnErr
 		default:
 		}
 		go fnWrap(data)
-		return context.Cause(ctx)
+		return returnErr
 	}
 	wait = func() error {
 		wg.Wait()
 		close(limiter)
-		return context.Cause(ctx)
+		return returnErr
 	}
 	return
 }
 
-// RunParallelNoBlock 该函数提供同 RunParallel 一样，但是 add 函数不会阻塞。注意请在 add 完所有任务后调用 wait。
+// RunParallelNoBlock 该函数提供同RunParallel一样，但是add函数不会阻塞。注意请在add完所有任务后调用wait。
 func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wait func() error) {
 	limiter := make(chan struct{}, max)
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	var returnErr error
+	errOnce := &sync.Once{}
 	wg := sync.WaitGroup{}
 	fnWrap := func(data T) {
 		var err error
@@ -147,9 +162,13 @@ func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wa
 					err = fmt.Errorf("%v", p)
 				}
 			}
-			if err != nil {
-				cancel(err)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				errOnce.Do(func() {
+					returnErr = err
+				})
+				cancel()
 			}
+
 			<-limiter
 		}()
 		err = fn(data)
@@ -170,12 +189,12 @@ func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wa
 				fnWrap(data)
 			}
 		}()
-		return context.Cause(ctx)
+		return returnErr
 	}
 	wait = func() error {
 		wg.Wait()
 		close(limiter)
-		return context.Cause(ctx)
+		return returnErr
 	}
 	return
 }
@@ -191,9 +210,11 @@ func Run[T any](ctx context.Context, proc func(context.Context, T) error, jobs .
 	if len(jobs) <= 0 {
 		return nil
 	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	wg := &sync.WaitGroup{}
+	var returnErr error
+	errOnce := &sync.Once{}
 	for i := range jobs {
 		wg.Add(1)
 		go func(t *T) {
@@ -203,18 +224,27 @@ func Run[T any](ctx context.Context, proc func(context.Context, T) error, jobs .
 				return
 			default:
 			}
+			var err error
 			defer func() {
 				if v := recover(); v != nil {
-					cancel(fmt.Errorf("%v", v))
+					cancel()
+					errOnce.Do(func() {
+						var ok bool
+						if err, ok = v.(error); !ok {
+							returnErr = fmt.Errorf("%v", v)
+						}
+					})
+				}
+				if err != nil {
+					cancel()
+					errOnce.Do(func() { returnErr = err })
 				}
 			}()
-			if err := proc(ctx, *t); err != nil {
-				cancel(err)
-			}
+			err = proc(ctx, *t)
 		}(&jobs[i])
 	}
 	wg.Wait()
-	return context.Cause(ctx)
+	return returnErr
 }
 
 // StartProcess 将每个jobs依次递给steps函数处理。一旦某个step发生error或者panic，StartProcess立即返回该error，

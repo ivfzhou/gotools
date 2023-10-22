@@ -1,8 +1,8 @@
 package gotools_test
 
 import (
-	"fmt"
 	"math/rand"
+	"regexp"
 	"testing"
 	"unicode/utf8"
 
@@ -23,24 +23,25 @@ func TestRandomChars(t *testing.T) {
 
 	for {
 		l := rand.Intn(33)
-		chars := gotools.RandomChars(l)
-		if len(chars) != l {
-			t.Error("chars len not match")
+		randomChars := gotools.RandomChars(l)
+		cl := len(randomChars)
+		if cl != l {
+			t.Errorf("the randomChars length mismatch: %d %d", cl, l)
 		}
-		if !utf8.ValidString(chars) {
-			t.Error("char invalid")
+		if !utf8.ValidString(randomChars) {
+			t.Error("randomChars invalid utf8")
 		}
-		for i := range chars {
-			_, ok := m[chars[i]]
+		for i := range randomChars {
+			_, ok := m[randomChars[i]]
 			if ok {
-				delete(m, chars[i])
+				delete(m, randomChars[i])
 			}
-			switch c := chars[i]; {
+			switch c := randomChars[i]; {
 			case c >= '0' && c <= '9':
 			case c >= 'a' && c <= 'z':
 			case c >= 'A' && c <= 'Z':
 			default:
-				t.Error("char invalid", chars)
+				t.Error("randomChars invalid", randomChars)
 			}
 		}
 		if len(m) <= 0 {
@@ -60,24 +61,25 @@ func TestRandomCharsCaseInsensitive(t *testing.T) {
 
 	for {
 		l := rand.Intn(33)
-		chars := gotools.RandomCharsCaseInsensitive(l)
-		if len(chars) != l {
-			t.Error("chars len not match")
+		randomChars := gotools.RandomCharsCaseInsensitive(l)
+		cl := len(randomChars)
+		if cl != l {
+			t.Errorf("randomChars length mismatch: %d %d", cl, l)
 		}
-		if !utf8.ValidString(chars) {
-			t.Error("char invalid")
+		if !utf8.ValidString(randomChars) {
+			t.Error("randomChars invalid utf8")
 		}
-		for i := range chars {
-			_, ok := m[chars[i]]
+		for i := range randomChars {
+			_, ok := m[randomChars[i]]
 			if ok {
-				delete(m, chars[i])
+				delete(m, randomChars[i])
 			}
-			switch c := chars[i]; {
+			switch c := randomChars[i]; {
 			case c >= '0' && c <= '9':
 			case c >= 'a' && c <= 'z':
 			case c >= 'A' && c <= 'Z':
 			default:
-				t.Error("char invalid", chars)
+				t.Error("randomChars invalid", randomChars)
 			}
 		}
 		if len(m) <= 0 {
@@ -87,7 +89,11 @@ func TestRandomCharsCaseInsensitive(t *testing.T) {
 }
 
 func TestRandomCharsCaseInsensitive2(t *testing.T) {
+	uuidMatcher := regexp.MustCompile(`^[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}$`)
 	for i := 0; i < 10; i++ {
-		fmt.Println(gotools.UUIDLike())
+		uuid := gotools.UUIDLike()
+		if !uuidMatcher.MatchString(uuid) {
+			t.Errorf("uuid mismatch %s", uuid)
+		}
 	}
 }

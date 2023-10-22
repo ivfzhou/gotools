@@ -37,7 +37,7 @@ func UnzipFromBytes(bs []byte, parentPath string) (filePaths []string, err error
 	filePaths = make([]string, 0, len(reader.File))
 	var r io.ReadCloser
 	for _, v := range reader.File {
-		name := parentPath + string(gbk2Utf8([]byte(v.FileHeader.Name)))
+		name := filepath.Join(parentPath, string(gbk2Utf8([]byte(v.FileHeader.Name))))
 		if v.FileInfo().IsDir() {
 			continue
 		}

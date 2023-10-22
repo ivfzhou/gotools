@@ -19,7 +19,6 @@ import (
 	"os"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -33,7 +32,6 @@ type writeAtReader struct {
 	recordWrite  sync.Map
 	unread       int64
 	nextOffset   int64
-	writeClose   atomic.Int32
 	writeErr     chan error
 	writeErrOnce sync.Once
 }

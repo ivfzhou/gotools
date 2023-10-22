@@ -19,19 +19,19 @@ import (
 	"gitee.com/ivfzhou/gotools"
 )
 
-func TestFailLocker(t *testing.T) {
+func TestFairLocker(t *testing.T) {
 	fairLocker := &gotools.FairLocker{}
 	count := 5
 	writer := func() {
 		fairLocker.WLock()
 		defer fairLocker.WUnlock()
-		t.Log("writing")
+		// t.Log("writing")
 		count--
 	}
 	reader := func() {
 		fairLocker.RLock()
 		defer fairLocker.RUnlock()
-		t.Log("reading count", count)
+		// t.Log("reading count", count)
 	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < 10; i++ {
@@ -49,7 +49,7 @@ func TestFailLocker(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	t.Log("count:", count)
+	// t.Log("count:", count)
 }
 
 func TestReadFirstLocker(t *testing.T) {
@@ -58,13 +58,13 @@ func TestReadFirstLocker(t *testing.T) {
 	writer := func() {
 		fairLocker.WLock()
 		defer fairLocker.WUnlock()
-		t.Log("writing")
+		// t.Log("writing")
 		count--
 	}
 	reader := func() {
 		fairLocker.RLock()
 		defer fairLocker.RUnlock()
-		t.Log("reading count", count)
+		// t.Log("reading count", count)
 	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < 10; i++ {
@@ -82,7 +82,7 @@ func TestReadFirstLocker(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	t.Log("count:", count)
+	// t.Log("count:", count)
 }
 
 func TestWriteFirstLocker(t *testing.T) {
@@ -91,13 +91,13 @@ func TestWriteFirstLocker(t *testing.T) {
 	writer := func() {
 		fairLocker.WLock()
 		defer fairLocker.WUnlock()
-		t.Log("writing")
+		// t.Log("writing")
 		count--
 	}
 	reader := func() {
 		fairLocker.RLock()
 		defer fairLocker.RUnlock()
-		t.Log("reading count", count)
+		// t.Log("reading count", count)
 	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < 500; i++ {
@@ -115,5 +115,5 @@ func TestWriteFirstLocker(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	t.Log("count:", count)
+	// t.Log("count:", count)
 }
