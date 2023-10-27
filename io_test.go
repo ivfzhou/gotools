@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"gitee.com/ivfzhou/gotools"
 )
@@ -186,4 +187,59 @@ func TestCopyFile(t *testing.T) {
 		t.Error("file size mistake", info.Size())
 	}
 	_ = os.Remove(dest)
+}
+
+func TestMultiReadCloser(t *testing.T) {
+	ctx := context.Background()
+	length := 80*1024*1024 + rand.Intn(1025)
+	data := make([]byte, length)
+	for i := 0; i < length; i++ {
+		data[i] = byte(rand.Intn(255))
+	}
+	rcs := make([]io.ReadCloser, rand.Intn(5))
+	l := 1 + rand.Intn(length/2)
+	residue := length - l
+	begin := 0
+	for i := range rcs {
+		rcs[i] = &bytesReader{Reader: bytes.NewReader(data[begin : begin+l])}
+		begin += l
+		l = rand.Intn(residue / 2)
+		residue -= l
+	}
+	r, add, endAdd := gotools.MultiReadCloser(ctx, rcs...)
+	go func() {
+		next := true
+		for next {
+			rc := &bytesReader{Reader: bytes.NewReader(data[begin : begin+l])}
+			begin += l
+			if residue == 0 {
+				next = false
+			} else {
+				l = 1 + rand.Intn(residue)
+				residue -= l
+			}
+			rcs = append(rcs, rc)
+			if rand.Intn(3) <= 0 {
+				time.Sleep(time.Millisecond * time.Duration(100+rand.Intn(5000)))
+			}
+			if err := add(rc); err != nil {
+				t.Error("unexpected error", err)
+			}
+		}
+		endAdd()
+	}()
+	bs, err := io.ReadAll(r)
+	if err != nil {
+		t.Error("unexpected error", err)
+	}
+	if len(data) != len(bs) {
+		t.Error("bytes length not match", len(data), len(bs))
+	} else if bytes.Compare(data, bs) != 0 {
+		t.Error("bytes does not compared")
+	}
+	for i := range rcs {
+		if rcs[i].(*bytesReader).closed <= 0 {
+			t.Error("reader not closed", i)
+		}
+	}
 }

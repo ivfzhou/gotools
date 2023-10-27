@@ -51,6 +51,11 @@ func WriteAtReader() (WriteAtCloser, io.ReadCloser)
 // 该函数可用于需要非同一时间多个读取流和一个写入流的工作模型。
 func NewMultiReader(ctx context.Context, writer func(order int, p []byte)) (
 send func(readSize, order int, reader io.ReadCloser), wait func() error)
+
+// MultiReadCloser 依次从rc中读出数据直到io.EOF则close rc。从r获取rc中读出的数据。
+// add添加rc，返回error表明读取rc发生错误，可以安全的添加nil。调用endAdd表明不会再有rc添加，当所有数据读完了时，r将返回EOF。
+// 如果ctx被cancel，将停止读取并返回error。
+func MultiReadCloser(ctx context.Context, rc ...io.ReadCloser) (r io.Reader, add func(rc io.ReadCloser) error, endAdd func())
 ```
 
 联系电邮：ivfzhou@126.com

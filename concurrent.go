@@ -16,7 +16,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -345,6 +347,49 @@ func RunPeriodically(period time.Duration) (add func(fn func())) {
 		}
 	}()
 	return func(fn func()) { fnChan <- fn }
+}
+
+// LimitRun 限制同一时间最大（max）运行次数。run会等待f运行完毕。
+// adjust调整最大运行数量。
+func LimitRun(max int) (run func(f func()), adjust func(max int)) {
+	ch := make(chan struct{}, max)
+	lock := &sync.Mutex{}
+	return func(f func()) {
+			lock.Lock()
+			ch <- struct{}{}
+			defer func() {
+				<-ch
+				lock.Unlock()
+				RecoverAndPrintStack()
+			}()
+			f()
+		}, func(max int) {
+			lock.Lock()
+			tmp := make(chan struct{}, max)
+			for i := 0; i < len(ch) && i < max; i++ {
+				tmp <- struct{}{}
+			}
+			ch = tmp
+			lock.Unlock()
+		}
+}
+
+// RecoverAndPrintStack 恢复panic并打印堆栈。
+func RecoverAndPrintStack() {
+	if p := recover(); p != nil {
+		var pc [4096]uintptr
+		l := runtime.Callers(2, pc[:])
+		_, _ = fmt.Fprintf(os.Stderr, "panic: %v [recovered]\n", p)
+		frames := runtime.CallersFrames(pc[:l])
+		for {
+			frame, more := frames.Next()
+			_, _ = fmt.Fprintf(os.Stderr, "%s\n", frame.Function)
+			_, _ = fmt.Fprintf(os.Stderr, "    %s:%v\n", frame.File, frame.Line)
+			if !more {
+				break
+			}
+		}
+	}
 }
 
 func startOneProcess[T any](ctx context.Context, f func(context.Context, T) error, notify func(),
