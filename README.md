@@ -1,12 +1,6 @@
 ##### 通用golang函数库
 
 ```golang
-// RunConcurrently 并发运行fn。
-func RunConcurrently(fn ...func() error) (wait func() error)
-
-// RunSequently  依次运行fn，当有err时停止后续fn运行。
-func RunSequently(fn ...func() error) (wait func() error)
-
 // RunParallel 该函数提供同时运行max个协程fn，一旦fn有err返回则停止接下来的fn运行。
 // 朝返回的 add 函数中添加任务，若正在运行的任务数已达到max则会阻塞当前程序。
 // add 函数返回err为任务 fn 返回的第一个err。与 wait 函数返回的err为同一个。
@@ -34,9 +28,6 @@ func StartProcess[T any](ctx context.Context, jobs []T, steps ...func(context.Co
 // 若所有chan都未曾激活（chan是nil也认为未激活）且都close了，或者ctx被cancel了，则ch被close。
 // 若同时chan被激活和ctx被cancel，则随机返回一个激活发送给chan的值。
 func Listen[T any](ctx context.Context, chans ...<-chan T) (ch <-chan T)
-
-// RunPeriodically 依次运行fn，每个fn之间至少间隔period时间。add用于添加fn。
-func RunPeriodically(period time.Duration) (add func(fn func()))
 
 // WriteAtReader 获取一个WriterAt和Reader对象，其中WriterAt用于并发写入数据，而与此同时Reader对象同时读取出已经写入好的数据。
 // WriterAt写入完毕后调用Close，则Reader会全部读取完后结束读取。
