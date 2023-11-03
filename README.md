@@ -10,6 +10,9 @@ func RunParallel[T any](max int, fn func(T) error) (add func(T) error, wait func
 // RunParallelNoBlock 该函数提供同RunParallel一样，但是add函数不会阻塞。注意请在add完所有任务后调用wait。
 func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wait func() error)
 
+// RunParallelNoLimit 该函数提供同RunParallel一样，但是不限制协程数。注意请在add完所有任务后调用wait。
+func RunParallelNoLimit[T any](fn func(T) error) (add func(T) error, wait func() error)
+
 // Run 并发将jobs传递给proc函数运行，一旦发生error便立即返回该error，并结束其它协程。
 // 当ctx被cancel时也将立即返回，此时返回cancel时的error。
 // 当proc运行发生panic将立即返回该panic字符串化的error。

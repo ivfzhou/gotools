@@ -55,7 +55,7 @@ func TestWriteAtReader(t *testing.T) {
 	writeAtCloser, readCloser := gotools.WriteAtReader()
 	wg := &sync.WaitGroup{}
 
-	file := make([]byte, 1024*1024*20+10)
+	file := make([]byte, 1024*1024*500+rand.Intn(1024*10))
 	for i := range file {
 		file[i] = byte(rand.Intn(257))
 	}
@@ -64,7 +64,7 @@ func TestWriteAtReader(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		fileSize := int64(len(file))
-		gap := int64(1024 * 1024)
+		gap := int64(1024 * 1024 * 8)
 		frags := fileSize / gap
 		m := make(map[int64]int64, frags+1)
 		if residue := fileSize % gap; residue != 0 {
@@ -74,26 +74,27 @@ func TestWriteAtReader(t *testing.T) {
 			m[i] = gap
 		}
 		defer writeAtCloser.Close()
+		wgi := &sync.WaitGroup{}
 		for len(m) > 0 {
-			for {
-				off := int64(rand.Intn(int(frags + 1)))
-				f, ok := m[off]
-				if ok {
-					delete(m, off)
-					go func() {
-						of := off * gap
-						n, err := writeAtCloser.WriteAt(file[of:of+f], of)
-						if err != nil {
-							t.Error(err)
-						}
-						if int64(n) != f {
-							t.Error("n!=f", n, f)
-						}
-					}()
-					break
-				}
+			off := int64(rand.Intn(int(frags + 1)))
+			f, ok := m[off]
+			if ok {
+				delete(m, off)
+				wgi.Add(1)
+				go func(f, off int64) {
+					defer wgi.Done()
+					of := off * gap
+					n, err := writeAtCloser.WriteAt(file[of:of+f], of)
+					if err != nil {
+						t.Error(err)
+					}
+					if int64(n) != f {
+						t.Error("n!=f", n, f)
+					}
+				}(f, off)
 			}
 		}
+		wgi.Wait()
 	}()
 
 	wg.Add(1)

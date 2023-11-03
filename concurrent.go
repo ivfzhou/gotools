@@ -201,6 +201,50 @@ func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wa
 	return
 }
 
+// RunParallelNoLimit 该函数提供同RunParallel一样，但是不限制协程数。注意请在add完所有任务后调用wait。
+func RunParallelNoLimit[T any](fn func(T) error) (add func(T) error, wait func() error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var returnErr error
+	errOnce := &sync.Once{}
+	wg := sync.WaitGroup{}
+	fnWrap := func(data T) {
+		var err error
+		defer func() {
+			if p := recover(); p != nil {
+				var ok bool
+				if err, ok = p.(error); !ok {
+					err = fmt.Errorf("%v", p)
+				}
+			}
+			if err != nil && !errors.Is(err, context.Canceled) {
+				errOnce.Do(func() {
+					returnErr = err
+				})
+				cancel()
+			}
+		}()
+		err = fn(data)
+	}
+	add = func(data T) error {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				fnWrap(data)
+			}
+		}()
+		return returnErr
+	}
+	wait = func() error {
+		wg.Wait()
+		return returnErr
+	}
+	return
+}
+
 // Run 并发将jobs传递给proc函数运行，一旦发生error便立即返回该error，并结束其它协程。
 // 当ctx被cancel时也将立即返回，此时返回cancel时的error。
 // 当proc运行发生panic将立即返回该panic字符串化的error。

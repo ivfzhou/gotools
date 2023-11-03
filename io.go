@@ -19,9 +19,8 @@ import (
 	"io"
 	"math"
 	"os"
-	"runtime"
 	"sync"
-	"time"
+	"sync/atomic"
 )
 
 type WriteAtCloser interface {
@@ -30,12 +29,15 @@ type WriteAtCloser interface {
 }
 
 type writeAtReader struct {
-	tmpFile      *os.File
-	recordWrite  sync.Map
-	unread       int64
-	nextOffset   int64
-	writeErr     chan error
-	writeErrOnce sync.Once
+	err         error
+	tmpFile     *os.File
+	errChan     chan error
+	cursor      int64
+	errOnce     sync.Once
+	axisMarker  AxisMarker
+	notify      chan struct{}
+	readerClose int32
+	writerClose int32
 }
 
 type writeClose struct {
@@ -61,13 +63,14 @@ type multiReader struct {
 // WriterAt发生的error会传递给Reader返回。
 // 该接口是特定为一个目的实现————服务器分片下载数据中转给客户端下载，提高中转数据效率。
 func WriteAtReader() (WriteAtCloser, io.ReadCloser) {
-	temp, err := os.CreateTemp("", "ivfzhou_gotools_WriteAndRead_")
+	temp, err := os.CreateTemp("", "ivfzhou_gotools_WriteAtReader")
 	if err != nil {
 		panic(err)
 	}
 	wr := &writeAtReader{
-		tmpFile:  temp,
-		writeErr: make(chan error),
+		tmpFile: temp,
+		errChan: make(chan error),
+		notify:  make(chan struct{}, 1),
 	}
 	return &writeClose{wr}, &readClose{wr}
 }
@@ -198,57 +201,96 @@ func NewMultiReader(ctx context.Context, writer func(order int, p []byte)) (
 }
 
 func (wc *writeClose) Close() error {
-	wc.writeErrOnce.Do(func() { close(wc.writeErr) })
-	return nil
+	if atomic.CompareAndSwapInt32(&wc.writerClose, 0, 1) {
+		wc.errOnce.Do(func() { close(wc.errChan) })
+	}
+	return errors.New("reader already closed")
 }
 
 func (rc *readClose) Close() error {
-	return os.Remove(rc.tmpFile.Name())
+	if atomic.CompareAndSwapInt32(&rc.readerClose, 0, 1) {
+		return os.Remove(rc.tmpFile.Name())
+	}
+	return errors.New("reader already closed")
 }
 
 func (wr *writeAtReader) WriteAt(p []byte, off int64) (int, error) {
-	wr.recordWrite.Store(off, int64(len(p)))
-	n, err := wr.tmpFile.WriteAt(p, off)
-	if err != nil {
-		wr.writeErrOnce.Do(func() { wr.writeErr <- err })
+	if atomic.LoadInt32(&wr.writerClose) > 0 {
+		return 0, errors.New("writer was closed")
 	}
-	return n, err
+	length := len(p)
+	begin := off
+	for {
+		select {
+		case <-wr.errChan:
+			return 0, wr.err
+		default:
+		}
+		l, err := wr.tmpFile.WriteAt(p, off)
+		if err != nil {
+			wr.errOnce.Do(func() { wr.err = err; close(wr.errChan) })
+			return l, err
+		}
+		if l == len(p) {
+			break
+		}
+		p = p[l:]
+		off += int64(l)
+	}
+	go func() {
+		wr.axisMarker.Mark(begin, int64(length))
+		select {
+		case wr.notify <- struct{}{}:
+		default:
+		}
+	}()
+	return length, nil
 }
 
 func (wr *writeAtReader) Read(p []byte) (int, error) {
+	if atomic.LoadInt32(&wr.readerClose) > 0 {
+		return 0, errors.New("reader was closed")
+	}
+	if len(p) <= 0 {
+		return 0, nil
+	}
 	for {
 		select {
-		case err := <-wr.writeErr:
-			if err != nil {
-				return 0, err
+		case <-wr.errChan:
+			if wr.err != nil {
+				return 0, wr.err
 			}
 			return wr.tmpFile.Read(p)
 		default:
 		}
 
-		pl := int64(len(p))
-		if wr.unread >= pl {
-			n, err := wr.tmpFile.Read(p)
-			wr.unread -= pl
-			return n, err
-		}
-		value, ok := wr.recordWrite.Load(wr.nextOffset)
-		if ok {
-			wr.recordWrite.Delete(wr.nextOffset)
-			l, _ := value.(int64)
-			wr.nextOffset += l
-			wr.unread += l
-			continue
+		l := wr.axisMarker.GetMaxMarkLine(wr.cursor)
+		if l > 0 {
+			pl := int64(len(p))
+			if l > pl {
+				l = pl
+			} else {
+				p = p[:l]
+			}
+			for {
+				n, err := wr.tmpFile.Read(p)
+				if err != nil && !errors.Is(err, io.EOF) {
+					wr.errOnce.Do(func() { wr.err = err; close(wr.errChan) })
+					return n, err
+				}
+				if len(p) == n {
+					break
+				}
+				p = p[n:]
+			}
+			atomic.AddInt64(&wr.cursor, l)
+			return int(l), nil
 		}
 
-		if wr.unread > 0 {
-			n, err := wr.tmpFile.Read(p[:wr.unread])
-			wr.unread = 0
-			return n, err
+		select {
+		case <-wr.notify:
+		case <-wr.errChan:
 		}
-
-		runtime.Gosched()
-		time.Sleep(time.Second)
 	}
 }
 
