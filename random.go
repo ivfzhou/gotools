@@ -36,6 +36,9 @@ func init() {
 
 // RandomChars 生成随机字符串（数字加字母组合）。
 func RandomChars(length int) string {
+	if length <= 0 {
+		return ""
+	}
 	count := 3
 	s := make([]byte, length)
 FLAG:
@@ -66,6 +69,9 @@ FLAG:
 
 // RandomCharsCaseInsensitive 生成随机字符串（数字加字母组合）。
 func RandomCharsCaseInsensitive(length int) string {
+	if length <= 0 {
+		return ""
+	}
 	count := 3
 	s := make([]byte, length)
 FLAG:
@@ -102,4 +108,31 @@ func UUIDLike() string {
 	res = append(append(res, s[16:20]...), '-')
 	res = append(res, s[20:]...)
 	return string(res)
+}
+
+// RandomString 生成所以字符串，内容限制为chars中存在的字符。
+func RandomString(length int, chars string) string {
+	if len(chars) <= 0 || length <= 0 {
+		return ""
+	}
+	count := 3
+	s := make([]rune, length)
+	charsT := []rune(chars)
+FLAG:
+	for i := 0; i < length; i++ {
+		s[i] = charsT[random.Intn(len(charsT))]
+	}
+	res := string(s)
+	actual, loaded := randomCache.LoadOrStore(res, time.Now())
+	if loaded {
+		t, _ := actual.(time.Time)
+		if time.Since(t) < time.Hour*24*30 {
+			if count > 0 {
+				count--
+				goto FLAG
+			}
+		}
+	}
+	randomCache.Store(res, time.Now())
+	return res
 }

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools"
+	"gitee.com/ivfzhou/gotools/v2"
 )
 
 func TestRunCommandAndPrompt(t *testing.T) {

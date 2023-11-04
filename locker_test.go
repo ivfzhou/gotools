@@ -16,7 +16,7 @@ import (
 	"sync"
 	"testing"
 
-	"gitee.com/ivfzhou/gotools"
+	"gitee.com/ivfzhou/gotools/v2"
 )
 
 func TestFairLocker(t *testing.T) {

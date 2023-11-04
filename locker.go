@@ -17,7 +17,8 @@ import (
 	"sync/atomic"
 )
 
-// FairLocker 公平读写锁
+// FairLocker 公平读写锁。
+//
 // 先到达的请求先获取处理器，无论是读请求还是写请求。
 type FairLocker struct {
 	rMutex, wMutex, mutex int32
@@ -54,8 +55,9 @@ func (locker *FairLocker) WUnlock() {
 	exitMutex(&locker.wMutex)
 }
 
-// ReadFirstLocker 读优先锁
-// 读优先意味着，连续的读请求获取处理器的概率高于写请求。
+// ReadFirstLocker 读优先锁。
+//
+// 读优先意味着，连续地读请求获取处理器的概率高于写请求。
 type ReadFirstLocker struct {
 	rMutex, wMutex int32
 	readCount      uint64
@@ -87,8 +89,9 @@ func (locker *ReadFirstLocker) WUnlock() {
 	exitMutex(&locker.wMutex)
 }
 
-// WriteFirstLocker 写优先锁
-// 读优先意味着，连续的写请求获取处理器的概率高于读请求。
+// WriteFirstLocker 写优先锁。
+//
+// 读优先意味着，连续地写请求获取处理器的概率高于读请求。
 type WriteFirstLocker struct {
 	rMutex, wMutex, mutex int32
 	readCount, writeCount uint64

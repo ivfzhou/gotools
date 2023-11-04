@@ -19,6 +19,7 @@ import (
 )
 
 // IPv4ToNum ipv4字符串转数字。
+//
 // 若是非ip地址则返回0。
 func IPv4ToNum(ip string) uint32 {
 	res := uint32(0)

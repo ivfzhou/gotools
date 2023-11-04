@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools"
+	"gitee.com/ivfzhou/gotools/v2"
 )
 
 type bytesReader struct {
@@ -33,8 +33,8 @@ type bytesReader struct {
 
 func (r *bytesReader) Close() error { r.closed++; return nil }
 
-func ExampleWriteAtReader() {
-	writeAtCloser, readCloser := gotools.WriteAtReader()
+func ExampleNewWriteAtReader() {
+	writeAtCloser, readCloser := gotools.NewWriteAtReader()
 
 	// 并发写入数据
 	go func() {
@@ -51,11 +51,12 @@ func ExampleWriteAtReader() {
 	readCloser.Close()
 }
 
-func TestWriteAtReader(t *testing.T) {
-	writeAtCloser, readCloser := gotools.WriteAtReader()
+func TestNewWriteAtReader(t *testing.T) {
+	writeAtCloser, readCloser := gotools.NewWriteAtReader()
 	wg := &sync.WaitGroup{}
 
-	file := make([]byte, 1024*1024*500+rand.Intn(1024*10))
+	fileTotalSize := 1024*1024*1024*1 + rand.Intn(1024*10)
+	file := make([]byte, fileTotalSize)
 	for i := range file {
 		file[i] = byte(rand.Intn(257))
 	}
@@ -73,7 +74,12 @@ func TestWriteAtReader(t *testing.T) {
 		for i := frags - 1; i >= 0; i-- {
 			m[i] = gap
 		}
-		defer writeAtCloser.Close()
+		defer func() {
+			err := writeAtCloser.Close()
+			if err != nil {
+				t.Error("err is not nil", err)
+			}
+		}()
 		wgi := &sync.WaitGroup{}
 		for len(m) > 0 {
 			off := int64(rand.Intn(int(frags + 1)))
@@ -83,13 +89,14 @@ func TestWriteAtReader(t *testing.T) {
 				wgi.Add(1)
 				go func(f, off int64) {
 					defer wgi.Done()
+					time.Sleep(100 * time.Millisecond)
 					of := off * gap
 					n, err := writeAtCloser.WriteAt(file[of:of+f], of)
 					if err != nil {
-						t.Error(err)
+						t.Error("err is not nil", err)
 					}
 					if int64(n) != f {
-						t.Error("n!=f", n, f)
+						t.Error("write len != bytes len", n, f)
 					}
 				}(f, off)
 			}
@@ -101,15 +108,21 @@ func TestWriteAtReader(t *testing.T) {
 	buf := &bytes.Buffer{}
 	go func() {
 		defer wg.Done()
-		defer readCloser.Close()
+		defer func() {
+			err := readCloser.Close()
+			if err != nil {
+				t.Error("err is not nil", err)
+			}
+		}()
+		now := time.Now()
 		_, err := io.Copy(buf, readCloser)
 		if err != nil {
 			t.Error(err)
 		}
+		t.Logf("NewWriteAtReader read speed %dbytes/s", int(float64(fileTotalSize)/time.Since(now).Seconds()))
 	}()
 
 	wg.Wait()
-
 	res := buf.Bytes()
 	l1 := len(res)
 	l2 := l1 != len(file)
@@ -123,7 +136,7 @@ func TestWriteAtReader(t *testing.T) {
 	}
 }
 
-func TestNewMultiReader(t *testing.T) {
+func TestNewMultiReadCloserToWriter(t *testing.T) {
 	readerNum := 10000
 	length := 10
 	m := make(map[int]struct{}, readerNum)
@@ -146,7 +159,7 @@ func TestNewMultiReader(t *testing.T) {
 	}
 	ctx := context.Background()
 	rs := make([]*bytesReader, readerNum)
-	send, wait := gotools.NewMultiReader(ctx, writer)
+	send, wait := gotools.NewMultiReadCloserToWriter(ctx, writer)
 	for i := 0; i < readerNum; i++ {
 		reader := &bytesReader{Reader: bytes.NewReader([]byte("0123456789"))}
 		rs[i] = reader
@@ -190,7 +203,7 @@ func TestCopyFile(t *testing.T) {
 	_ = os.Remove(dest)
 }
 
-func TestMultiReadCloser(t *testing.T) {
+func TestNewMultiReadCloserToReader(t *testing.T) {
 	ctx := context.Background()
 	length := 80*1024*1024 + rand.Intn(1025)
 	data := make([]byte, length)
@@ -207,7 +220,7 @@ func TestMultiReadCloser(t *testing.T) {
 		l = rand.Intn(residue / 2)
 		residue -= l
 	}
-	r, add, endAdd := gotools.MultiReadCloser(ctx, rcs...)
+	r, add, endAdd := gotools.NewMultiReadCloserToReader(ctx, rcs...)
 	go func() {
 		next := true
 		for next {

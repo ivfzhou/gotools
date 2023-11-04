@@ -12,11 +12,7 @@
 
 package gotools
 
-import (
-	"fmt"
-	"reflect"
-	"strings"
-)
+import "reflect"
 
 type Number interface {
 	~int | ~int8 | ~int16 | ~int32 | ~int64 |
@@ -24,37 +20,27 @@ type Number interface {
 		~uintptr | ~float32 | ~float64
 }
 
-// Max 求最大值。
-func Max[T Number](x, y T) T {
-	if y > x {
-		return y
+func Max[T Number](x ...T) T {
+	var max T
+	for _, v := range x {
+		if v > max {
+			max = v
+		}
 	}
-	return x
+	return max
 }
 
-// Min 求最小值。
-func Min[T Number](x, y T) T {
-	if y < x {
-		return y
+func Min[T Number](x ...T) T {
+	var min T
+	for _, v := range x {
+		if v < min {
+			min = v
+		}
 	}
-	return x
+	return min
 }
 
-// Join 拼接元素返回字符串。
-func Join[T fmt.Stringer](arr []T, sep string) string {
-	sb := strings.Builder{}
-	for i := 0; i < len(arr)-1; i++ {
-		sb.WriteString(arr[i].String())
-		sb.WriteString(sep)
-	}
-	if len(arr) > 0 {
-		sb.WriteString(arr[len(arr)-1].String())
-		sb.WriteString(sep)
-	}
-	return sb.String()
-}
-
-func Convert[E, T any](sli []E, fn func(E) T) []T {
+func ConvertSlice[E, T any](sli []E, fn func(E) T) []T {
 	list := make([]T, len(sli))
 	for i := range sli {
 		list[i] = fn(sli[i])
@@ -62,7 +48,7 @@ func Convert[E, T any](sli []E, fn func(E) T) []T {
 	return list
 }
 
-func Distinct[E comparable](sli []E) []E {
+func DistinctSlice[E comparable](sli []E) []E {
 	list := make([]E, 0, len(sli))
 	m := make(map[E]struct{}, len(sli))
 	for i := range sli {
@@ -76,7 +62,7 @@ func Distinct[E comparable](sli []E) []E {
 	return list
 }
 
-func Filter[E any](sli []E, fn func(E) bool) []E {
+func FilterSlice[E any](sli []E, fn func(E) bool) []E {
 	list := make([]E, 0, len(sli))
 	for i := range sli {
 		if fn(sli[i]) {
@@ -86,7 +72,7 @@ func Filter[E any](sli []E, fn func(E) bool) []E {
 	return list
 }
 
-func DropZero[E any](sli []E) []E {
+func DropSliceZero[E any](sli []E) []E {
 	list := make([]E, 0, len(sli))
 	for i := range sli {
 		val := reflect.ValueOf(sli[i])
@@ -111,28 +97,10 @@ func DropZero[E any](sli []E) []E {
 	return list
 }
 
-func Foreach[E any](sli []E, fn func(E)) {
+func ForeachSlice[E any](sli []E, fn func(E)) {
 	for i := range sli {
 		fn(sli[i])
 	}
-}
-
-func ForeachCanBreak[E any](sli []E, fn func(E) bool) {
-	for i := range sli {
-		if !fn(sli[i]) {
-			break
-		}
-	}
-}
-
-func ForeachWithReturn[E, T any](sli []E, fn func(E) (T, bool)) T {
-	for i := range sli {
-		if t, ok := fn(sli[i]); ok {
-			return t
-		}
-	}
-	var t T
-	return t
 }
 
 func FilterMap[K comparable, V any](m map[K]V, fn func(K, V) bool) map[K]V {
@@ -161,7 +129,7 @@ func PickMapKey[K comparable, V any](m map[K]V) []K {
 	return list
 }
 
-func ConvertToSlice[K comparable, V, T any](m map[K]V, fn func(K, V) T) []T {
+func ConvertMap[K comparable, V, T any](m map[K]V, fn func(K, V) T) []T {
 	list := make([]T, 0, len(m))
 	for k, v := range m {
 		list = append(list, fn(k, v))
@@ -169,7 +137,7 @@ func ConvertToSlice[K comparable, V, T any](m map[K]V, fn func(K, V) T) []T {
 	return list
 }
 
-func ConvertToMap[K comparable, V, E any](sli []E, fn func(E) (K, V)) map[K]V {
+func ConvertSliceToMap[K comparable, V, E any](sli []E, fn func(E) (K, V)) map[K]V {
 	m := make(map[K]V, len(sli))
 	for i := range sli {
 		k, v := fn(sli[i])

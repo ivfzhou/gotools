@@ -14,7 +14,9 @@ package gotools
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -49,7 +51,10 @@ func (c *Command) Write(input string) error {
 	if err != nil {
 		c.err = err
 		c.once.Do(func() { close(c.exit) })
-		c.cmd.Process.Kill()
+		e := c.cmd.Process.Kill()
+		if e != nil {
+			_, _ = fmt.Fprintln(os.Stderr, e)
+		}
 	}
 	return err
 }

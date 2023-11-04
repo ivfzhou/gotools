@@ -16,250 +16,242 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
 
-// RunConcurrently 并发运行fn。
-func RunConcurrently(fn ...func() error) (wait func() error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	var returnErr error
-	errOnce := &sync.Once{}
+// RunConcurrently 并发运行fn，但有error发生时终止运行。
+func RunConcurrently(ctx context.Context, fn ...func(context.Context) error) (wait func() error) {
+	select {
+	case <-ctx.Done():
+		return func() error {
+			err := ctx.Err()
+			if err == nil {
+				err = context.Canceled
+			}
+			return err
+		}
+	default:
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	var (
+		returnErr error
+		cancelErr error
+	)
 	wg := sync.WaitGroup{}
+	errOnce := &sync.Once{}
 	wg.Add(len(fn))
 	for _, f := range fn {
-		go func(f func() error) {
+		go func(f func(context.Context) error) {
 			var err error
 			defer func() {
 				wg.Done()
-				if v := recover(); v != nil {
-					var ok bool
-					if err, ok = v.(error); !ok {
-						err = fmt.Errorf("%v", v)
+				if p := recover(); p != nil {
+					err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
+				}
+				if err != nil {
+					cancel()
+					if !errors.Is(err, context.Canceled) {
+						errOnce.Do(func() { returnErr = err })
 					}
 				}
-
-				if err != nil && !errors.Is(err, context.Canceled) {
-					errOnce.Do(func() {
-						returnErr = err
-					})
-					cancel()
-				}
-
 			}()
 			select {
 			case <-ctx.Done():
+				cancelErr = ctx.Err()
+				if cancelErr == nil {
+					cancelErr = context.Canceled
+				}
 			default:
-				err = f()
+				err = f(ctx)
 			}
 		}(f)
 	}
 	return func() error {
 		wg.Wait()
 		cancel()
-		return returnErr
+		if returnErr != nil {
+			return returnErr
+		}
+		return cancelErr
 	}
 }
 
-// RunSequently  依次运行fn，当有err时停止后续fn运行。
-func RunSequently(fn ...func() error) (wait func() error) {
-	errCh := make(chan error)
+// RunSequentially 依次运行fn，当有error发生时停止后续fn运行。
+func RunSequentially(ctx context.Context, fn ...func(context.Context) error) (wait func() error) {
+	select {
+	case <-ctx.Done():
+		return func() error {
+			err := ctx.Err()
+			if err == nil {
+				err = context.Canceled
+			}
+			return err
+		}
+	default:
+	}
+	var returnErr error
+	notify := make(chan struct{})
 	go func() {
 		for _, f := range fn {
+			select {
+			case <-ctx.Done():
+				returnErr = ctx.Err()
+				if returnErr == nil {
+					returnErr = context.Canceled
+				}
+				close(notify)
+			default:
+			}
 			err := func() (err error) {
 				defer func() {
-					if v := recover(); v != nil {
-						var ok bool
-						if err, ok = v.(error); !ok {
-							err = fmt.Errorf("%v", v)
-						}
+					if p := recover(); p != nil {
+						err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
 					}
 				}()
-				return f()
+				err = f(ctx)
+				return
 			}()
 			if err != nil {
-				errCh <- err
-				close(errCh)
+				returnErr = err
+				close(notify)
 				return
 			}
 		}
-		errCh <- nil
-		close(errCh)
+		close(notify)
 	}()
 	return func() error {
-		return <-errCh
+		<-notify
+		return returnErr
 	}
 }
 
-// RunParallel 该函数提供同时运行max个协程fn，一旦fn有err返回则停止接下来的fn运行。
-// 朝返回的add函数中添加任务，若正在运行的任务数已达到max则会阻塞当前程序。
-// add函数返回err为任务fn返回的第一个err。与wait函数返回的err为同一个。
+// NewRunner 该函数提供同时运行max个协程fn，一旦fn发生error便终止fn运行。
+//
+// max小于等于0表示不限制协程数。
+//
+// 朝返回的run函数中添加fn，若block为true表示正在运行的任务数已达到max则会阻塞。
+//
+// add函数返回error为任务fn返回的第一个error，与wait函数返回的error为同一个。
+//
 // 注意请在add完所有任务后调用wait。
-func RunParallel[T any](max int, fn func(T) error) (add func(T) error, wait func() error) {
-	limiter := make(chan struct{}, max)
+func NewRunner[T any](ctx context.Context, max int, fn func(context.Context, T) error) (
+	run func(t T, block bool) error, wait func() error) {
+
 	var returnErr error
+	select {
+	case <-ctx.Done():
+		returnErr = ctx.Err()
+		if returnErr == nil {
+			returnErr = context.Canceled
+		}
+		return func(t T, block bool) error { return returnErr }, func() error { return returnErr }
+	default:
+	}
+
+	var limiter chan struct{}
+	if max > 0 {
+		limiter = make(chan struct{}, max)
+	}
+	ctx, cancel := context.WithCancel(ctx)
 	errOnce := &sync.Once{}
-	ctx, cancel := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}
-	fnWrap := func(data T) {
+	var cancelErr error
+	fnWrapper := func(t T) {
 		var err error
 		defer func() {
 			if p := recover(); p != nil {
-				var ok bool
-				if err, ok = p.(error); !ok {
-					err = fmt.Errorf("%v", p)
-				}
+				err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
 			}
-			if err != nil && !errors.Is(err, context.Canceled) {
-				errOnce.Do(func() { returnErr = err })
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					errOnce.Do(func() { returnErr = err })
+				}
 				cancel()
 			}
-
-			<-limiter
+			if limiter != nil {
+				<-limiter
+			}
 			wg.Done()
 		}()
-		err = fn(data)
-	}
-	add = func(data T) error {
-		wg.Add(1)
 		select {
 		case <-ctx.Done():
-			wg.Done()
-			return returnErr
-		case limiter <- struct{}{}:
-		}
-		select {
-		case <-ctx.Done():
-			wg.Done()
-			return returnErr
+			ctxErr := ctx.Err()
+			if ctxErr != nil && cancelErr == nil {
+				cancelErr = ctxErr
+			}
 		default:
+			err = fn(ctx, t)
 		}
-		go fnWrap(data)
-		return returnErr
 	}
-	wait = func() error {
-		wg.Wait()
-		close(limiter)
-		return returnErr
-	}
-	return
-}
-
-// RunParallelNoBlock 该函数提供同RunParallel一样，但是add函数不会阻塞。注意请在add完所有任务后调用wait。
-func RunParallelNoBlock[T any](max int, fn func(T) error) (add func(T) error, wait func() error) {
-	limiter := make(chan struct{}, max)
-	ctx, cancel := context.WithCancel(context.Background())
-	var returnErr error
-	errOnce := &sync.Once{}
-	wg := sync.WaitGroup{}
-	fnWrap := func(data T) {
-		var err error
-		defer func() {
-			if p := recover(); p != nil {
-				var ok bool
-				if err, ok = p.(error); !ok {
-					err = fmt.Errorf("%v", p)
-				}
-			}
-			if err != nil && !errors.Is(err, context.Canceled) {
-				errOnce.Do(func() {
-					returnErr = err
-				})
-				cancel()
-			}
-
-			<-limiter
-		}()
-		err = fn(data)
-	}
-	add = func(data T) error {
+	run = func(t T, block bool) error {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		if block && limiter != nil {
 			select {
 			case <-ctx.Done():
-				return
+				defer wg.Done()
+				if returnErr != nil {
+					return returnErr
+				}
+				if cancelErr != nil {
+					return cancelErr
+				}
+				ctxErr := ctx.Err()
+				if ctxErr != nil {
+					cancelErr = ctxErr
+				}
+				return cancelErr
 			case limiter <- struct{}{}:
 			}
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				fnWrap(data)
-			}
-		}()
-		return returnErr
-	}
-	wait = func() error {
-		wg.Wait()
-		close(limiter)
-		return returnErr
-	}
-	return
-}
-
-// RunParallelNoLimit 该函数提供同RunParallel一样，但是不限制协程数。注意请在add完所有任务后调用wait。
-func RunParallelNoLimit[T any](fn func(T) error) (add func(T) error, wait func() error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	var returnErr error
-	errOnce := &sync.Once{}
-	wg := sync.WaitGroup{}
-	fnWrap := func(data T) {
-		var err error
-		defer func() {
-			if p := recover(); p != nil {
-				var ok bool
-				if err, ok = p.(error); !ok {
-					err = fmt.Errorf("%v", p)
+			go fnWrapper(t)
+			return returnErr
+		}
+		go func() {
+			if limiter != nil {
+				select {
+				case <-ctx.Done():
+					ctxErr := ctx.Err()
+					if ctxErr != nil && cancelErr == nil {
+						cancelErr = ctxErr
+					}
+					wg.Done()
+					return
+				case limiter <- struct{}{}:
 				}
 			}
-			if err != nil && !errors.Is(err, context.Canceled) {
-				errOnce.Do(func() {
-					returnErr = err
-				})
-				cancel()
-			}
+			fnWrapper(t)
 		}()
-		err = fn(data)
-	}
-	add = func(data T) error {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				fnWrap(data)
-			}
-		}()
-		return returnErr
+
+		if returnErr != nil {
+			return returnErr
+		}
+		return cancelErr
 	}
 	wait = func() error {
 		wg.Wait()
-		return returnErr
+		if returnErr != nil {
+			return returnErr
+		}
+		return cancelErr
 	}
 	return
 }
 
-// Run 并发将jobs传递给proc函数运行，一旦发生error便立即返回该error，并结束其它协程。
-// 当ctx被cancel时也将立即返回，此时返回cancel时的error。
-// 当proc运行发生panic将立即返回该panic字符串化的error。
-// proc为nil时函数将panic。
-func Run[T any](ctx context.Context, proc func(context.Context, T) error, jobs ...T) error {
-	if proc == nil {
-		panic("the proc cannot nil")
-	}
+// Run 并发将jobs传递给fn函数运行，一旦发生error便立即返回该error，并结束其它协程。
+func Run[T any](ctx context.Context, fn func(context.Context, T) error, jobs ...T) error {
 	if len(jobs) <= 0 {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	wg := &sync.WaitGroup{}
-	var returnErr error
+	var (
+		returnErr error
+		cancelErr error
+	)
 	errOnce := &sync.Once{}
 	for i := range jobs {
 		wg.Add(1)
@@ -267,39 +259,49 @@ func Run[T any](ctx context.Context, proc func(context.Context, T) error, jobs .
 			defer wg.Done()
 			select {
 			case <-ctx.Done():
+				cancelErr = ctx.Err()
+				if cancelErr == nil {
+					cancelErr = context.Canceled
+				}
 				return
 			default:
 			}
 			var err error
 			defer func() {
-				if v := recover(); v != nil {
-					cancel()
-					errOnce.Do(func() {
-						var ok bool
-						if err, ok = v.(error); !ok {
-							returnErr = fmt.Errorf("%v", v)
-						}
-					})
+				if p := recover(); p != nil {
+					err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
 				}
 				if err != nil {
 					cancel()
-					errOnce.Do(func() { returnErr = err })
+					if !errors.Is(err, context.Canceled) {
+						errOnce.Do(func() { returnErr = err })
+					}
 				}
 			}()
-			err = proc(ctx, *t)
+			err = fn(ctx, *t)
 		}(&jobs[i])
 	}
 	wg.Wait()
-	return returnErr
+
+	if returnErr != nil {
+		return returnErr
+	}
+	return cancelErr
 }
 
-// StartProcess 将每个jobs依次递给steps函数处理。一旦某个step发生error或者panic，StartProcess立即返回该error，
+// RunPipeline 将每个jobs依次递给steps函数处理。一旦某个step发生error或者panic，StartProcess立即返回该error，
 // 并及时结束其他StartProcess开启的goroutine，也不开启新的goroutine运行step。
+//
 // 一个job最多在一个step中运行一次，且一个job一定是依次序递给steps，前一个step处理完毕才会给下一个step处理。
+//
 // 每个step并发运行jobs。
-// StartProcess等待所有goroutine运行结束才返回，或者ctx被cancel时也将及时结束开启的goroutine后返回。
-// StartProcess因被ctx cancel而结束时函数返回nil。若steps中含有nil StartProcess将会panic。
-func StartProcess[T any](ctx context.Context, jobs []T, steps ...func(context.Context, T) error) error {
+//
+// 等待所有goroutine运行结束才返回，或者ctx被cancel时也将及时结束开启的goroutine后返回。
+//
+// 因被ctx cancel而结束时函数返回nil。
+//
+// 若steps中含有nil将会panic。
+func RunPipeline[T any](ctx context.Context, jobs []T, steps ...func(context.Context, T) error) error {
 	if len(steps) <= 0 || len(jobs) <= 0 {
 		return nil
 	}
@@ -315,32 +317,23 @@ func StartProcess[T any](ctx context.Context, jobs []T, steps ...func(context.Co
 	errChans := make([]<-chan error, len(steps))
 	var nextCh <-chan *T = ch
 	for i, step := range steps {
-		nextCh, errChans[i] = startOneProcess(ctx, step, cancel, nextCh)
+		nextCh, errChans[i] = startStep(ctx, step, cancel, nextCh)
 	}
 
-	for _, errCh := range errChans {
-		if err := <-errCh; err != nil {
-			return err
-		}
-	}
-	return nil
+	return <-ListenChan(errChans...)
 }
 
-// Listen 监听chans，一旦有一个chan激活便立即将T发送给ch，并close ch。
-// 若所有chan都未曾激活（chan是nil也认为未激活）且都close了，或者ctx被cancel了，则ch被close。
-// 若同时chan被激活和ctx被cancel，则随机返回一个激活发送给chan的值。
-func Listen[T any](ctx context.Context, chans ...<-chan T) (ch <-chan T) {
+// ListenChan 监听chans，一旦有一个chan激活便立即将T发送给ch，并close ch。
+//
+// 若所有chans都未曾激活（chan是nil也认为未激活）且都close了，则ch被close。
+//
+// 若同时多个chans被激活，则随机将一个激活值发送给ch。
+func ListenChan[T any](chans ...<-chan T) (ch <-chan T) {
 	tch := make(chan T, 1)
 	ch = tch
 	if len(chans) <= 0 {
 		close(tch)
 		return
-	}
-	select {
-	case <-ctx.Done():
-		close(tch)
-		return
-	default:
 	}
 	go func() {
 		scs := make([]reflect.SelectCase, 0, len(chans))
@@ -353,20 +346,12 @@ func Listen[T any](ctx context.Context, chans ...<-chan T) (ch <-chan T) {
 				Chan: reflect.ValueOf(chans[i]),
 			})
 		}
-		scs = append(scs, reflect.SelectCase{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(ctx.Done()),
-		})
 		for {
-			if len(scs) <= 1 {
+			if len(scs) <= 0 {
 				close(tch)
 				return
 			}
 			chosen, recv, ok := reflect.Select(scs)
-			if chosen == len(scs)-1 {
-				close(tch)
-				return
-			}
 			if !ok {
 				scs = append(scs[:chosen], scs[chosen+1:]...)
 			} else {
@@ -376,73 +361,60 @@ func Listen[T any](ctx context.Context, chans ...<-chan T) (ch <-chan T) {
 			}
 		}
 	}()
-	return ch
+
+	return
 }
 
-// RunPeriodically 依次运行fn，每个fn之间至少间隔period时间。add用于添加fn。
-func RunPeriodically(period time.Duration) (add func(fn func())) {
+// RunPeriodically 依次运行fn，每个fn之间至少间隔period时间。
+func RunPeriodically(period time.Duration) (run func(fn func())) {
 	fnChan := make(chan func())
 	lastAccess := time.Time{}
+	errCh := make(chan any, 1)
+	fnWrapper := func(f func()) (p any) {
+		defer func() { p = recover() }()
+		f()
+		return nil
+	}
 	go func() {
 		for f := range fnChan {
 			time.Sleep(period - time.Since(lastAccess))
-			f()
+			errCh <- fnWrapper(f)
 			lastAccess = time.Now()
 		}
 	}()
-	return func(fn func()) { fnChan <- fn }
-}
-
-// LimitRun 限制同一时间最大（max）运行次数。run会等待f运行完毕。
-// adjust调整最大运行数量。
-func LimitRun(max int) (run func(f func()), adjust func(max int)) {
-	ch := make(chan struct{}, max)
-	lock := &sync.Mutex{}
-	return func(f func()) {
-			lock.Lock()
-			ch <- struct{}{}
-			defer func() {
-				<-ch
-				lock.Unlock()
-				RecoverAndPrintStack()
-			}()
-			f()
-		}, func(max int) {
-			lock.Lock()
-			tmp := make(chan struct{}, max)
-			for i := 0; i < len(ch) && i < max; i++ {
-				tmp <- struct{}{}
-			}
-			ch = tmp
-			lock.Unlock()
-		}
-}
-
-// RecoverAndPrintStack 恢复panic并打印堆栈。
-func RecoverAndPrintStack() {
-	if p := recover(); p != nil {
-		var pc [4096]uintptr
-		l := runtime.Callers(2, pc[:])
-		_, _ = fmt.Fprintf(os.Stderr, "panic: %v [recovered]\n", p)
-		frames := runtime.CallersFrames(pc[:l])
-		for {
-			frame, more := frames.Next()
-			_, _ = fmt.Fprintf(os.Stderr, "%s\n", frame.Function)
-			_, _ = fmt.Fprintf(os.Stderr, "    %s:%v\n", frame.File, frame.Line)
-			if !more {
-				break
-			}
+	return func(fn func()) {
+		fnChan <- fn
+		if p := <-errCh; p != nil {
+			panic(p)
 		}
 	}
 }
 
-func startOneProcess[T any](ctx context.Context, f func(context.Context, T) error, notify func(),
-	dataChan <-chan *T) (<-chan *T, <-chan error) {
-	ctx, cancel := context.WithCancel(ctx)
+func StackTrace() (stack string) {
+	sb := &strings.Builder{}
+	var pc [4096]uintptr
+	l := runtime.Callers(2, pc[:])
+	frames := runtime.CallersFrames(pc[:l])
+	for {
+		frame, more := frames.Next()
+		_, _ = fmt.Fprintf(sb, "%s\n", frame.Function)
+		_, _ = fmt.Fprintf(sb, "    %s:%v\n", frame.File, frame.Line)
+		if !more {
+			break
+		}
+	}
+
+	return sb.String()
+}
+
+func startStep[T any](ctx context.Context, f func(context.Context, T) error, notify func(), dataChan <-chan *T) (
+	<-chan *T, <-chan error) {
+
 	ch := make(chan *T, cap(dataChan))
 	errCh := make(chan error, 1)
 	go func() {
-		once := &sync.Once{}
+		ctx, cancel := context.WithCancel(ctx)
+		errOnce := &sync.Once{}
 		wg := &sync.WaitGroup{}
 		defer func() {
 			wg.Wait()
@@ -454,7 +426,7 @@ func startOneProcess[T any](ctx context.Context, f func(context.Context, T) erro
 			select {
 			case <-ctx.Done():
 				return
-			case data, ok := <-dataChan:
+			case t, ok := <-dataChan:
 				if !ok {
 					return
 				}
@@ -466,24 +438,26 @@ func startOneProcess[T any](ctx context.Context, f func(context.Context, T) erro
 						return
 					default:
 					}
+					var err error
 					defer func() {
-						if v := recover(); v != nil {
-							err := fmt.Errorf("%v", v)
+						if p := recover(); p != nil {
+							err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
+						}
+						if err != nil {
 							cancel()
 							notify()
-							once.Do(func() { errCh <- err })
+							if !errors.Is(err, context.Canceled) {
+								errOnce.Do(func() { errCh <- err })
+							}
+						} else {
+							ch <- t
 						}
 					}()
-					if err := f(ctx, *t); err != nil {
-						cancel()
-						notify()
-						once.Do(func() { errCh <- err })
-					} else {
-						ch <- t
-					}
-				}(data)
+					err = f(ctx, *t)
+				}(t)
 			}
 		}
 	}()
+
 	return ch, errCh
 }

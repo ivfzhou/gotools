@@ -60,6 +60,7 @@ func UnzipFromBytes(bs []byte, parentPath string) (filePaths []string, err error
 	return filePaths, nil
 }
 
+// ZipFilesToBytes 将文件打成压缩包。
 func ZipFilesToBytes(files ...string) ([]byte, error) {
 	buf := bytes.Buffer{}
 	writer := zip.NewWriter(&buf)

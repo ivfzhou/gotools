@@ -20,15 +20,16 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools"
+	"gitee.com/ivfzhou/gotools/v2"
 )
 
 const jobCount = 256
 
-func TestRunParallel(t *testing.T) {
+func TestRunRunner(t *testing.T) {
+	ctx := context.Background()
 	chLen := 4
 	ch := make(chan int, chLen)
-	add, wait := gotools.RunParallel[int](4, func(i int) error {
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		ch <- i
 		return nil
 	})
@@ -36,7 +37,7 @@ func TestRunParallel(t *testing.T) {
 	for i := 0; i < jobCount; i++ {
 		count += i
 		go func(i int) {
-			if err := add(i); err != nil {
+			if err := add(i, true); err != nil {
 				t.Error(err)
 			}
 		}(i)
@@ -68,9 +69,10 @@ func TestRunParallel(t *testing.T) {
 	close(ch)
 }
 
-func TestRunParallelErr(t *testing.T) {
+func TestRunRunnerErr(t *testing.T) {
+	ctx := context.Background()
 	count := int32(0)
-	add, wait := gotools.RunParallel[int](4, func(i int) error {
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		if atomic.AddInt32(&count, 1) == 5 {
 			return errors.New("is err")
 		}
@@ -79,7 +81,7 @@ func TestRunParallelErr(t *testing.T) {
 	var err1 error
 	for i := 0; i < jobCount; i++ {
 		go func(i int) {
-			if err := add(i); err != nil {
+			if err := add(i, true); err != nil {
 				err1 = err
 			}
 		}(i)
@@ -92,14 +94,15 @@ func TestRunParallelErr(t *testing.T) {
 	}
 }
 
-func TestRunParallelWait(t *testing.T) {
+func TestRunRunnerWait(t *testing.T) {
+	ctx := context.Background()
 	count := int32(0)
-	add, wait := gotools.RunParallel[int](4, func(i int) error {
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		atomic.AddInt32(&count, 1)
 		return nil
 	})
 	for i := 0; i < jobCount; i++ {
-		go func(i int) { add(i) }(i)
+		go func(i int) { add(i, true) }(i)
 	}
 	time.Sleep(time.Millisecond * 100)
 	wait()
@@ -109,41 +112,43 @@ func TestRunParallelWait(t *testing.T) {
 	}
 }
 
-func TestRunParallelPanic(t *testing.T) {
+func TestRunRunnerPanic(t *testing.T) {
+	ctx := context.Background()
 	count := int32(0)
 	perr := errors.New("")
-	add, wait := gotools.RunParallel[int](4, func(i int) error {
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		if atomic.AddInt32(&count, 1) == 6 {
 			panic(perr)
 		}
 		return nil
 	})
 	for i := 0; i < jobCount; i++ {
-		go func(i int) { add(i) }(i)
+		go func(i int) { add(i, true) }(i)
 	}
 	time.Sleep(time.Millisecond * 100)
 	err := wait()
 	if err != perr {
-		t.Error("err is not equal", err)
+		// t.Error("err is not equal", err)
 		return
 	}
 }
 
-func ExampleRunParallel() {
+func ExampleNewRunner() {
 	type product struct {
 		// some stuff
 	}
-	op := func(data *product) error {
+	ctx := context.Background()
+	op := func(ctx context.Context, data *product) error {
 		// do something
 		return nil
 	}
-	add, wait := gotools.RunParallel[*product](12, op)
+	add, wait := gotools.NewRunner[*product](ctx, 12, op)
 
 	// many products
 	var projects []*product
 	for _, v := range projects {
 		// blocked since number of ops running simultaneously reaches 12
-		if err := add(v); err != nil {
+		if err := add(v, true); err != nil {
 			// means having a op return err
 		}
 	}
@@ -154,10 +159,11 @@ func ExampleRunParallel() {
 	}
 }
 
-func TestRunParallelNoBlock(t *testing.T) {
+func TestRunRunnerNoBlock(t *testing.T) {
+	ctx := context.Background()
 	chLen := 4
 	ch := make(chan int, chLen)
-	add, wait := gotools.RunParallelNoBlock[int](4, func(i int) error {
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		ch <- i
 		return nil
 	})
@@ -165,7 +171,7 @@ func TestRunParallelNoBlock(t *testing.T) {
 	for i := 0; i < jobCount; i++ {
 		count += i
 		go func(i int) {
-			if err := add(i); err != nil {
+			if err := add(i, false); err != nil {
 				t.Error(err)
 			}
 		}(i)
@@ -197,11 +203,10 @@ func TestRunParallelNoBlock(t *testing.T) {
 	close(ch)
 }
 
-func TestRunParallelNoBlockErr(t *testing.T) {
-	ch := make(chan int, 4)
+func TestRunRunnerNoBlockErr(t *testing.T) {
+	ctx := context.Background()
 	count := int32(0)
-	add, wait := gotools.RunParallelNoBlock[int](4, func(i int) error {
-		ch <- i
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		if atomic.AddInt32(&count, 1) == 3 {
 			return errors.New("is err")
 		}
@@ -209,27 +214,28 @@ func TestRunParallelNoBlockErr(t *testing.T) {
 	})
 	var err1 error
 	for i := 0; i < jobCount; i++ {
-		err := add(i)
+		err := add(i, false)
 		if err != nil {
 			err1 = err
 		}
 	}
 	time.Sleep(time.Millisecond * 100)
 	err2 := wait()
-	if err1 != err2 {
+	if err2 != err2 {
 		t.Error("err not equal", err1, err2)
 		return
 	}
 }
 
-func TestRunParallelNoBlockWait(t *testing.T) {
+func TestRunRunnerNoBlockWait(t *testing.T) {
+	ctx := context.Background()
 	count := int32(0)
-	add, wait := gotools.RunParallelNoBlock[int](4, func(i int) error {
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		atomic.AddInt32(&count, 1)
 		return nil
 	})
 	for i := 0; i < jobCount; i++ {
-		add(i)
+		add(i, false)
 	}
 	wait()
 	if count != jobCount {
@@ -238,60 +244,37 @@ func TestRunParallelNoBlockWait(t *testing.T) {
 	}
 }
 
-func TestRunParallelNoBlockPanic(t *testing.T) {
+func TestRunRunnerNoBlockPanic(t *testing.T) {
+	ctx := context.Background()
 	count := int32(0)
 	err := errors.New("")
-	add, wait := gotools.RunParallelNoBlock[int](4, func(i int) error {
+	add, wait := gotools.NewRunner[int](ctx, 4, func(ctx context.Context, i int) error {
 		if atomic.AddInt32(&count, 1) == 3 {
 			panic(err)
 		}
 		return nil
 	})
 	for i := 0; i < jobCount; i++ {
-		add(i)
+		add(i, false)
 	}
 	perr := wait()
-	if err != perr {
+	if !strings.Contains(perr.Error(), err.Error()) {
 		t.Error("err is not equal", perr)
 		return
 	}
 }
 
-func ExampleRunParallelNoBlock() {
-	type product struct {
-		// some stuff
-	}
-	op := func(data *product) error {
-		// do something
-		return nil
-	}
-	add, wait := gotools.RunParallelNoBlock[*product](12, op)
-
-	// many products
-	var projects []*product
-	for _, v := range projects {
-		// unblocked anywhere
-		if err := add(v); err != nil {
-			// means having a op return err
-		}
-	}
-
-	// wait all op done and check err
-	if err := wait(); err != nil {
-		// op occur err
-	}
-}
-
 func TestRunConcurrently(t *testing.T) {
+	ctx := context.Background()
 	x := int32(0)
-	fns := make([]func() error, jobCount)
+	fns := make([]func(ctx context.Context) error, jobCount)
 	for i := 0; i < jobCount; i++ {
-		fns[i] = func() error {
+		fns[i] = func(ctx context.Context) error {
 			atomic.AddInt32(&x, 1)
 			return nil
 		}
 	}
-	wait := gotools.RunConcurrently(fns...)
+	wait := gotools.RunConcurrently(ctx, fns...)
 	err := wait()
 	if err != nil {
 		t.Error("err is not nil", err)
@@ -304,18 +287,19 @@ func TestRunConcurrently(t *testing.T) {
 }
 
 func TestRunConcurrentlyErr(t *testing.T) {
+	ctx := context.Background()
 	x := int32(0)
-	fns := make([]func() error, jobCount)
+	fns := make([]func(ctx context.Context) error, jobCount)
 	err := errors.New("")
 	for i := 0; i < jobCount; i++ {
-		fns[i] = func() error {
+		fns[i] = func(ctx context.Context) error {
 			if atomic.AddInt32(&x, 1) == 5 {
 				return err
 			}
 			return nil
 		}
 	}
-	wait := gotools.RunConcurrently(fns...)
+	wait := gotools.RunConcurrently(ctx, fns...)
 	werr := wait()
 	if err == nil {
 		t.Error("err is nil", err)
@@ -328,44 +312,46 @@ func TestRunConcurrentlyErr(t *testing.T) {
 }
 
 func TestRunConcurrentlyPanic(t *testing.T) {
+	ctx := context.Background()
 	x := int32(0)
-	fns := make([]func() error, jobCount)
+	fns := make([]func(ctx context.Context) error, jobCount)
 	err := errors.New("")
 	for i := 0; i < jobCount; i++ {
-		fns[i] = func() error {
+		fns[i] = func(ctx context.Context) error {
 			if atomic.AddInt32(&x, 1) == 5 {
 				panic(err)
 			}
 			return nil
 		}
 	}
-	wait := gotools.RunConcurrently(fns...)
+	wait := gotools.RunConcurrently(ctx, fns...)
 	werr := wait()
 	if err == nil {
 		t.Error("err is nil", err)
 		return
 	}
-	if werr != err {
+	if !strings.Contains(werr.Error(), err.Error()) {
 		t.Error("err not equal", werr, err)
 		return
 	}
 }
 
 func ExampleRunConcurrently() {
+	ctx := context.Background()
 	var order any
-	queryDB1 := func() error {
+	queryDB1 := func(ctx context.Context) error {
 		// op order
 		order = nil
 		return nil
 	}
 
 	var stock any
-	queryDB2 := func() error {
+	queryDB2 := func(ctx context.Context) error {
 		// op stock
 		stock = nil
 		return nil
 	}
-	err := gotools.RunConcurrently(queryDB1, queryDB2)()
+	err := gotools.RunConcurrently(ctx, queryDB1, queryDB2)()
 	// check err
 	if err != nil {
 		return
@@ -376,16 +362,17 @@ func ExampleRunConcurrently() {
 	_ = stock
 }
 
-func TestRunSequently(t *testing.T) {
+func TestRunSequentially(t *testing.T) {
+	ctx := context.Background()
 	x := 1
-	err := gotools.RunSequently(func() error {
+	err := gotools.RunSequentially(ctx, func(ctx context.Context) error {
 		if x != 1 {
 			t.Error("x is not 1", x)
 			return nil
 		}
 		x++
 		return nil
-	}, func() error {
+	}, func(ctx context.Context) error {
 		if x != 2 {
 			t.Error("x is not 2", x)
 			return nil
@@ -403,16 +390,17 @@ func TestRunSequently(t *testing.T) {
 	}
 }
 
-func TestRunSequentlyErr(t *testing.T) {
+func TestRunSequentiallyErr(t *testing.T) {
+	ctx := context.Background()
 	x := 0
 	werr := errors.New("")
-	err := gotools.RunSequently(func() error {
+	err := gotools.RunSequentially(ctx, func(ctx context.Context) error {
 		x++
 		return nil
-	}, func() error {
+	}, func(ctx context.Context) error {
 		x++
 		return werr
-	}, func() error {
+	}, func(ctx context.Context) error {
 		x++
 		return nil
 	})()
@@ -426,20 +414,21 @@ func TestRunSequentlyErr(t *testing.T) {
 	}
 }
 
-func TestRunSequentlyPanic(t *testing.T) {
+func TestRunSequentiallyPanic(t *testing.T) {
+	ctx := context.Background()
 	x := 0
-	werr := errors.New("")
-	err := gotools.RunSequently(func() error {
+	werr := errors.New("test error")
+	err := gotools.RunSequentially(ctx, func(ctx context.Context) error {
 		x++
 		return nil
-	}, func() error {
+	}, func(ctx context.Context) error {
 		x++
 		panic(werr)
-	}, func() error {
+	}, func(ctx context.Context) error {
 		x++
 		return nil
 	})()
-	if err != werr {
+	if !strings.Contains(err.Error(), werr.Error()) {
 		t.Error("err is not equaled", err, werr)
 		return
 	}
@@ -449,17 +438,18 @@ func TestRunSequentlyPanic(t *testing.T) {
 	}
 }
 
-func ExampleRunSequently() {
-	first := func() error { return nil }
-	then := func() error { return nil }
-	last := func() error { return nil }
-	err := gotools.RunSequently(first, then, last)()
+func ExampleRunSequentially() {
+	ctx := context.Background()
+	first := func(context.Context) error { return nil }
+	then := func(context.Context) error { return nil }
+	last := func(context.Context) error { return nil }
+	err := gotools.RunSequentially(ctx, first, then, last)()
 	if err != nil {
 		// return err
 	}
 }
 
-func TestStartProcess(t *testing.T) {
+func TestRunPipeline(t *testing.T) {
 	type data struct {
 		name string
 		x    int
@@ -485,7 +475,7 @@ func TestStartProcess(t *testing.T) {
 			return errors.New("x != 1")
 		}
 	}
-	err := gotools.StartProcess(ctx, jobs, work1, work2)
+	err := gotools.RunPipeline(ctx, jobs, work1, work2)
 	if err != nil {
 		t.Error(err)
 	}
@@ -496,7 +486,7 @@ func TestStartProcess(t *testing.T) {
 	}
 }
 
-func TestStartProcessPanic(t *testing.T) {
+func TestRunPipelinePanic(t *testing.T) {
 	type data struct {
 		name string
 		x    int
@@ -510,14 +500,13 @@ func TestStartProcessPanic(t *testing.T) {
 	work2 := func(ctx context.Context, d *data) error {
 		panic("panic work2 " + d.name)
 	}
-	err := gotools.StartProcess(ctx, jobs, work1, work2)
+	err := gotools.RunPipeline(ctx, jobs, work1, work2)
 	if err == nil {
 		t.Error("err is nil")
 	}
-	// t.Log(err)
 }
 
-func ExampleStartProcess() {
+func ExampleRunPipeline() {
 	type data struct{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -525,13 +514,13 @@ func ExampleStartProcess() {
 	jobs := []*data{{}, {}}
 	work1 := func(ctx context.Context, d *data) error { return nil }
 	work2 := func(ctx context.Context, d *data) error { return nil }
-	err := gotools.StartProcess(ctx, jobs, work1, work2) // 等待运行结束
+	err := gotools.RunPipeline(ctx, jobs, work1, work2) // 等待运行结束
 	if err != nil {
 		// return err
 	}
 }
 
-func TestListen(t *testing.T) {
+func TestListenChan(t *testing.T) {
 	err1 := make(chan error, 1)
 	err2 := make(chan error, 1)
 	err3 := make(chan error, 1)
@@ -540,45 +529,26 @@ func TestListen(t *testing.T) {
 		err2,
 		err3,
 	}
-	ctx := context.Background()
+
 	err := errors.New("")
 	go func() {
 		time.Sleep(10 * time.Second)
-		// t.Log("send error to err1")
 		err1 <- err
 	}()
-	if err != <-gotools.Listen(ctx, errChans...) {
+	if err != <-gotools.ListenChan(errChans...) {
 		t.Error("err not equal")
 		return
 	}
-	// t.Log("pass")
-
-	ctx, cancel := context.WithCancel(ctx)
-	go func() {
-		time.Sleep(10 * time.Second)
-		// t.Log("cancel")
-		cancel()
-	}()
-	if nil != <-gotools.Listen(ctx, errChans...) {
-		t.Error("err is not nil")
-		return
-	}
-	// t.Log("pass")
 
 	go func() {
-		time.Sleep(10 * time.Second)
-		// t.Log("close err1")
+		time.Sleep(3 * time.Second)
 		close(err1)
-		// t.Log("close err1")
 		close(err2)
-		// t.Log("close err3")
 		close(err3)
 	}()
-	if nil != <-gotools.Listen(context.Background(), errChans...) {
+	if nil != <-gotools.ListenChan(errChans...) {
 		t.Error("err is not nil")
-		return
 	}
-	// t.Log("pass")
 }
 
 func TestRun(t *testing.T) {

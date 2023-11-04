@@ -3,7 +3,7 @@ package gotools_test
 import (
 	"testing"
 
-	"gitee.com/ivfzhou/gotools"
+	"gitee.com/ivfzhou/gotools/v2"
 )
 
 func TestIPv4ToNum(t *testing.T) {
