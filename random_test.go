@@ -26,10 +26,10 @@ func TestRandomChars(t *testing.T) {
 		randomChars := gotools.RandomChars(l)
 		cl := len(randomChars)
 		if cl != l {
-			t.Errorf("the randomChars length mismatch: %d %d", cl, l)
+			t.Errorf("random: the randomChars length mismatch: %d %d", cl, l)
 		}
 		if !utf8.ValidString(randomChars) {
-			t.Error("randomChars invalid utf8")
+			t.Error("random: randomChars invalid utf8")
 		}
 		for i := range randomChars {
 			_, ok := m[randomChars[i]]
@@ -41,7 +41,7 @@ func TestRandomChars(t *testing.T) {
 			case c >= 'a' && c <= 'z':
 			case c >= 'A' && c <= 'Z':
 			default:
-				t.Error("randomChars invalid", randomChars)
+				t.Error("random: randomChars invalid", randomChars)
 			}
 		}
 		if len(m) <= 0 {
@@ -64,10 +64,10 @@ func TestRandomCharsCaseInsensitive(t *testing.T) {
 		randomChars := gotools.RandomCharsCaseInsensitive(l)
 		cl := len(randomChars)
 		if cl != l {
-			t.Errorf("randomChars length mismatch: %d %d", cl, l)
+			t.Errorf("random: randomChars length mismatch: %d %d", cl, l)
 		}
 		if !utf8.ValidString(randomChars) {
-			t.Error("randomChars invalid utf8")
+			t.Error("random: randomChars invalid utf8")
 		}
 		for i := range randomChars {
 			_, ok := m[randomChars[i]]
@@ -79,7 +79,7 @@ func TestRandomCharsCaseInsensitive(t *testing.T) {
 			case c >= 'a' && c <= 'z':
 			case c >= 'A' && c <= 'Z':
 			default:
-				t.Error("randomChars invalid", randomChars)
+				t.Error("random: randomChars invalid", randomChars)
 			}
 		}
 		if len(m) <= 0 {
@@ -88,12 +88,12 @@ func TestRandomCharsCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestRandomCharsCaseInsensitive2(t *testing.T) {
+func TestUUIDLike(t *testing.T) {
 	uuidMatcher := regexp.MustCompile(`^[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}$`)
 	for i := 0; i < 10; i++ {
 		uuid := gotools.UUIDLike()
 		if !uuidMatcher.MatchString(uuid) {
-			t.Errorf("uuid mismatch %s", uuid)
+			t.Errorf("random: uuid mismatch %s", uuid)
 		}
 	}
 }

@@ -390,7 +390,7 @@ func RunPeriodically(period time.Duration) (run func(fn func())) {
 	}
 }
 
-func StackTrace() (stack string) {
+func StackTrace() string {
 	sb := &strings.Builder{}
 	var pc [4096]uintptr
 	l := runtime.Callers(2, pc[:])

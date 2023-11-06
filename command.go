@@ -27,9 +27,9 @@ type Command struct {
 	err            error
 	stdout, stderr bytes.Buffer
 	readCursor     int64
-	writeClose     io.WriteCloser
+	writeCloser    io.WriteCloser
 	exit           chan struct{}
-	once           sync.Once
+	exitOnce       sync.Once
 }
 
 // Read 读取标准输出。
@@ -47,10 +47,10 @@ func (c *Command) Write(input string) error {
 	if !strings.HasSuffix(input, "\n") {
 		input += "\n"
 	}
-	_, err := c.writeClose.Write([]byte(input))
+	_, err := c.writeCloser.Write([]byte(input))
 	if err != nil {
 		c.err = err
-		c.once.Do(func() { close(c.exit) })
+		c.exitOnce.Do(func() { close(c.exit) })
 		e := c.cmd.Process.Kill()
 		if e != nil {
 			_, _ = fmt.Fprintln(os.Stderr, e)
@@ -81,18 +81,18 @@ func RunCommand(cmd string) *Command {
 	c := &Command{cmd: command, exit: make(chan struct{})}
 	command.Stderr = &c.stderr
 	command.Stdout = &c.stdout
-	c.writeClose, c.err = command.StdinPipe()
+	c.writeCloser, c.err = command.StdinPipe()
 	if c.err != nil {
-		c.once.Do(func() { close(c.exit) })
+		c.exitOnce.Do(func() { close(c.exit) })
 		return c
 	}
 	if c.err = command.Start(); c.err != nil {
-		c.once.Do(func() { close(c.exit) })
+		c.exitOnce.Do(func() { close(c.exit) })
 		return c
 	}
 	go func() {
 		c.err = command.Wait()
-		c.once.Do(func() { close(c.exit) })
+		c.exitOnce.Do(func() { close(c.exit) })
 	}()
 	return c
 }

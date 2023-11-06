@@ -1,6 +1,10 @@
+//go:build linux
+// +build linux
+
 package gotools_test
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -8,15 +12,15 @@ import (
 )
 
 func TestRunCommandAndPrompt(t *testing.T) {
-	stdout, stderr, err := gotools.RunCommandAndPrompt("testdata/echo", "echo")
+	stdout, stderr, err := gotools.RunCommandAndPrompt("testdata"+string(filepath.Separator)+"echo", "echo")
 	if err != nil {
-		t.Error("unexpected error", err)
+		t.Error("command: unexpected error", err)
 	}
 	if string(stderr) != "your input is echo\n" {
-		t.Error("unexpected stderr", string(stderr))
+		t.Error("command: unexpected stderr", string(stderr))
 	}
 	if string(stdout) != "test echo\nbegin test\nyour input is echo\n" {
-		t.Error("unexpected stdout", string(stdout))
+		t.Error("command: unexpected stdout", string(stdout))
 	}
 }
 
@@ -24,7 +28,6 @@ func TestRunCommand(t *testing.T) {
 	command := gotools.RunCommand("testdata/echo")
 	times := 0
 	for !command.IsExit() {
-
 		bs := command.Read()
 		if len(bs) <= 0 {
 			time.Sleep(time.Second)
@@ -49,12 +52,12 @@ func TestRunCommand(t *testing.T) {
 	}
 	stdout, stderr, err := command.Out()
 	if err != nil {
-		t.Error(err)
+		t.Error("command: unexpected error", err)
 	}
 	if string(stderr) != "your input is hello\n" {
-		t.Error(string(stderr))
+		t.Error("command: unexpected stderr", string(stderr))
 	}
 	if string(stdout) != "test echo\nbegin test\nyour input is hello\n" {
-		t.Error(string(stdout))
+		t.Error("command: unexpected stdout", string(stdout))
 	}
 }

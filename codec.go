@@ -16,6 +16,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -24,70 +25,209 @@ import (
 )
 
 // UnzipFromBytes 将压缩数据解压写入硬盘。
-func UnzipFromBytes(bs []byte, parentPath string) (filePaths []string, err error) {
-	parentPath = filepath.Clean(parentPath)
-	if err = os.MkdirAll(parentPath, 0700); err != nil {
+func UnzipFromBytes(zippedBytes []byte, toDir string) (filePaths []string, err error) {
+	toDir = filepath.Clean(toDir)
+	if err = os.MkdirAll(toDir, 0755); err != nil {
 		return nil, err
 	}
 
-	reader, err := zip.NewReader(bytes.NewReader(bs), int64(len(bs)))
+	reader, err := zip.NewReader(bytes.NewReader(zippedBytes), int64(len(zippedBytes)))
 	if err != nil {
 		return nil, err
 	}
 	filePaths = make([]string, 0, len(reader.File))
-	var r io.ReadCloser
+	var (
+		r    io.ReadCloser
+		file *os.File
+	)
 	for _, v := range reader.File {
-		name := filepath.Join(parentPath, string(gbk2Utf8([]byte(v.FileHeader.Name))))
 		if v.FileInfo().IsDir() {
 			continue
 		}
-		if err = os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+
+		name := filepath.Join(toDir, string(gbk2Utf8([]byte(v.FileHeader.Name))))
+		if err = os.MkdirAll(filepath.Dir(name), 0755); err != nil {
 			return nil, err
 		}
-		filePaths = append(filePaths, name)
+
 		if r, err = v.Open(); err != nil {
 			return nil, err
 		}
-		if bs, err = io.ReadAll(r); err != nil {
-			_ = r.Close()
+
+		file, err = os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if err != nil {
+			CloseIO(r)
 			return nil, err
 		}
-		if err = os.WriteFile(name, bs, 0600); err != nil {
+
+		_, err = io.Copy(file, r)
+		if err != nil {
+			CloseIO(r)
+			CloseIO(file)
 			return nil, err
 		}
+
+		filePaths = append(filePaths, name)
+	}
+
+	return filePaths, nil
+}
+
+// UnzipFromFiles 解压并写入硬盘。
+func UnzipFromFiles(zippedFilePath string, toDir string) (filePaths []string, err error) {
+	toDir = filepath.Clean(toDir)
+
+	// 创建文件夹
+	if err = os.MkdirAll(toDir, 0755); err != nil {
+		return nil, err
+	}
+
+	// 打开流
+	reader, err := zip.OpenReader(zippedFilePath)
+	if err != nil {
+		return nil, err
+	}
+	filePaths = make([]string, 0, len(reader.File))
+
+	var (
+		r io.ReadCloser
+		w *os.File
+	)
+	for _, v := range reader.File {
+		if v.FileInfo().IsDir() {
+			continue
+		}
+
+		fileName := string(gbk2Utf8([]byte(v.FileHeader.Name)))
+		fileName = filepath.Clean(filepath.Join(toDir, fileName))
+		if err = os.MkdirAll(filepath.Dir(fileName), 0755); err != nil {
+			return nil, err
+		}
+
+		// 打开zip流
+		r, err = v.Open()
+		if err != nil {
+			return nil, err
+		}
+
+		// 打开磁盘文件流
+		w, err = os.OpenFile(fileName, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return nil, err
+		}
+
+		// 写入磁盘
+		if _, err = io.Copy(w, r); err != nil {
+			CloseIO(r)
+			CloseIO(w)
+			return nil, err
+		}
+
+		CloseIO(r)
+		CloseIO(w)
+
+		filePaths = append(filePaths, fileName)
 	}
 
 	return filePaths, nil
 }
 
 // ZipFilesToBytes 将文件打成压缩包。
-func ZipFilesToBytes(files ...string) ([]byte, error) {
+func ZipFilesToBytes(filePaths ...string) ([]byte, error) {
 	buf := bytes.Buffer{}
 	writer := zip.NewWriter(&buf)
 	var (
 		err  error
 		w    io.Writer
-		data []byte
-		l    int
+		file *os.File
 	)
-	for _, v := range files {
+	for _, v := range filePaths {
 		if w, err = writer.Create(filepath.Base(v)); err != nil {
 			return nil, err
 		}
-		if data, err = os.ReadFile(v); err != nil {
+
+		file, err = os.Open(v)
+		if err != nil {
 			return nil, err
 		}
-		for len(data) > 0 {
-			if l, err = w.Write(data); err != nil {
-				return nil, err
-			}
-			data = data[l:]
+
+		_, err = io.Copy(w, file)
+		if err != nil {
+			CloseIO(file)
+			return nil, err
 		}
+		CloseIO(file)
 	}
 	if err = writer.Close(); err != nil {
 		return nil, err
 	}
+
 	return buf.Bytes(), nil
+}
+
+// ZipFiles 加压并写入硬盘。
+func ZipFiles(toZippedFilePath string, fromDir string) error {
+	// 找出所有文件
+	files := make(map[string]string, 10)
+	var seekFile func(p string) error
+	seekFile = func(p string) error {
+		fileInfo, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		if !fileInfo.IsDir() {
+			files[p], _ = filepath.Rel(fromDir, p)
+			return nil
+		}
+		dir, err := ioutil.ReadDir(p)
+		if err != nil {
+			return err
+		}
+		for i := range dir {
+			if err = seekFile(filepath.Join(p, dir[i].Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	err := seekFile(fromDir)
+	if err != nil {
+		return err
+	}
+
+	// 打开磁盘文件流
+	file, err := os.OpenFile(toZippedFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer CloseIO(file)
+
+	// 加压写入
+	writer := zip.NewWriter(file)
+	defer CloseIO(writer)
+	var (
+		w io.Writer
+		r *os.File
+	)
+	for fullPath, relativePath := range files {
+		w, err = writer.Create(relativePath)
+		if err != nil {
+			return err
+		}
+
+		r, err = os.Open(fullPath)
+		if err != nil {
+			return err
+		}
+
+		if _, err = io.Copy(w, r); err != nil {
+			CloseIO(r)
+			return err
+		}
+		CloseIO(r)
+	}
+
+	return nil
 }
 
 func gbk2Utf8(bs []byte) []byte {

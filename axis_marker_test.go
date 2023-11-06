@@ -18,7 +18,7 @@ import (
 	"gitee.com/ivfzhou/gotools/v2"
 )
 
-func TestAxisMarker_searchOffset(t *testing.T) {
+func TestAxisMarker(t *testing.T) {
 	am := &gotools.AxisMarker{}
 	am.Mark(1, 1)
 	am.Mark(3, 1)
@@ -28,17 +28,20 @@ func TestAxisMarker_searchOffset(t *testing.T) {
 	am.Mark(11, 1)
 	am.Mark(13, 1)
 	if l := am.GetMaxMarkLine(1); l != 1 {
-		t.Error("match error", l)
+		t.Error("axis_marker: failed to match, expected 1 but give", l)
 	}
 	am.Mark(2, 5)
 	if l := am.GetMaxMarkLine(2); l != 6 {
-		t.Error("match error", l)
+		t.Error("axis_marker: failed to match, expected 6 but give", l)
 	}
 	if l := am.GetMaxMarkLine(1); l != 7 {
-		t.Error("match error", l)
+		t.Error("axis_marker: failed to match, expected 7 but give", l)
 	}
 	am.Mark(3, 9)
 	if l := am.GetMaxMarkLine(1); l != 11 {
-		t.Error("match error", l)
+		t.Error("axis_marker: failed to match, expected 11 but give", l)
+	}
+	if len(am.String()) <= 0 {
+		t.Error("axis_marker: string can not empty")
 	}
 }

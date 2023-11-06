@@ -17,15 +17,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
 
 type WriteAtCloser interface {
 	io.WriterAt
+	// Closer
+	// Deprecated: 使用CloseByError代替
 	io.Closer
+	CloseByError(error) error
 }
 
 type writeAtReader struct {
@@ -40,22 +43,20 @@ type writeAtReader struct {
 	writerClose int32
 }
 
-type writeClose struct {
+type writeCloser struct {
 	*writeAtReader
 }
 
-type readClose struct {
+type readCloser struct {
 	*writeAtReader
 }
 
 type multiReader struct {
-	err      error
-	ctx      context.Context
-	rcChan   chan io.ReadCloser
-	done     chan struct{}
-	doneOnce sync.Once
-	curRc    io.ReadCloser
-	cancel   func()
+	err     error
+	ctx     context.Context
+	rcQueue *Queue[io.ReadCloser]
+	curRc   io.ReadCloser
+	lock    sync.Mutex
 }
 
 // NewWriteAtReader 获取一个WriterAt和Reader对象，其中WriterAt用于并发写入数据，而与此同时Reader对象同时读取出已经写入好的数据。
@@ -75,7 +76,7 @@ func NewWriteAtReader() (WriteAtCloser, io.ReadCloser) {
 		errChan: make(chan error),
 		notify:  make(chan struct{}, 1),
 	}
-	return &writeClose{wr}, &readClose{wr}
+	return &writeCloser{wr}, &readCloser{wr}
 }
 
 // NewMultiReadCloserToReader 依次从rc中读出数据直到io.EOF则close rc。从r获取rc中读出的数据。
@@ -88,27 +89,15 @@ func NewWriteAtReader() (WriteAtCloser, io.ReadCloser) {
 func NewMultiReadCloserToReader(ctx context.Context, rc ...io.ReadCloser) (
 	r io.Reader, add func(rc io.ReadCloser) error, endAdd func()) {
 
-	rcChan := make(chan io.ReadCloser, int(math.Max(float64(len(rc)), 256)))
-	ctx, cancel := context.WithCancel(ctx)
-	cancelWrapper := func() {
-		cancel()
-		go func() {
-			for closer := range rcChan {
-				CloseIO(closer)
-			}
-		}()
-	}
 	mr := &multiReader{
-		ctx:    ctx,
-		rcChan: rcChan,
-		done:   make(chan struct{}),
-		cancel: cancelWrapper,
+		ctx:     ctx,
+		rcQueue: &Queue[io.ReadCloser]{},
 	}
 	for i := range rc {
 		if rc[i] == nil {
 			continue
 		}
-		mr.rcChan <- rc[i]
+		mr.rcQueue.Push(rc[i])
 	}
 	return mr,
 		func(rc io.ReadCloser) error {
@@ -116,20 +105,28 @@ func NewMultiReadCloserToReader(ctx context.Context, rc ...io.ReadCloser) (
 				return nil
 			}
 			select {
-			case <-mr.done:
-				CloseIO(rc)
-				return mr.err
 			case <-mr.ctx.Done():
 				CloseIO(rc)
+				mr.rcQueue.Close()
 				if mr.err != nil {
 					return mr.err
 				}
-				return mr.ctx.Err()
+				if err := mr.ctx.Err(); err != nil {
+					return err
+				}
+				return context.Canceled
 			default:
-				mr.rcChan <- rc
+				if !mr.rcQueue.Push(rc) {
+					CloseIO(rc)
+					if mr.err != nil {
+						return mr.err
+					}
+					return errors.New("endAdd was called")
+				}
 				return mr.err
 			}
-		}, func() { mr.doneOnce.Do(func() { close(mr.done) }) }
+		},
+		func() { mr.rcQueue.Close() }
 }
 
 // NewMultiReadCloserToWriter 依次从reader读出数据并写入writer中，并close reader。
@@ -146,17 +143,22 @@ func NewMultiReadCloserToWriter(ctx context.Context, writer func(order int, p []
 
 	ctx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
-	once := &sync.Once{}
+	errOnce := &sync.Once{}
 	waitOnce := &sync.Once{}
 	wg := &sync.WaitGroup{}
-	var err error
+	var (
+		returnRrr error
+		cancelErr error
+	)
 	return func(readSize, order int, reader io.ReadCloser) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				select {
 				case <-ctx.Done():
-					once.Do(func() { errCh <- fmt.Errorf("context canceled: %v", ctx.Err()); close(errCh) })
+					if cancelErr == nil {
+						cancelErr = ctx.Err()
+					}
 					return
 				default:
 				}
@@ -164,40 +166,47 @@ func NewMultiReadCloserToWriter(ctx context.Context, writer func(order int, p []
 				n, err := io.ReadFull(reader, p)
 				if err != nil || n != len(p) {
 					cancel()
-					once.Do(func() {
-						errCh <- fmt.Errorf("reading bytes occur error, want read size %d, actual size: %d: %v", len(p), n, err)
+					errOnce.Do(func() {
+						errCh <- fmt.Errorf("reading bytes occur error, want read size %d, actual size: %d, error is %v", len(p), n, err)
 						close(errCh)
 					})
 				}
-				_ = reader.Close()
+				CloseIO(reader)
 				writer(order, p)
 			}()
 		},
 		func() error {
 			waitOnce.Do(func() {
 				wg.Wait()
+				cancel()
 				select {
-				case err = <-errCh:
+				case returnRrr = <-errCh:
 				default:
-					once.Do(func() { close(errCh); cancel() })
+					errOnce.Do(func() { close(errCh) })
 				}
 			})
-			return err
+			if returnRrr != nil {
+				return returnRrr
+			}
+			return cancelErr
 		}
 }
 
 // CopyFile 复制文件。
 func CopyFile(src, dest string) error {
-	srcFile, err := os.OpenFile(src, os.O_RDONLY, 0400)
+	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer CloseIO(srcFile)
-	destFile, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
+
+	_ = os.Mkdir(filepath.Dir(dest), 0755)
+	destFile, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644)
 	if err != nil {
 		return err
 	}
 	defer CloseIO(destFile)
+
 	_, err = io.Copy(destFile, srcFile)
 	return err
 }
@@ -212,17 +221,31 @@ func CloseIO(c io.Closer) {
 	}
 }
 
-func (wc *writeClose) Close() error {
-	if atomic.CompareAndSwapInt32(&wc.writerClose, 0, 1) {
-		wc.errOnce.Do(func() { close(wc.errChan) })
+func (c *writeCloser) Close() error {
+	if atomic.CompareAndSwapInt32(&c.writerClose, 0, 1) {
+		c.errOnce.Do(func() { close(c.errChan) })
 		return nil
 	}
 	return errors.New("reader already closed")
 }
 
-func (rc *readClose) Close() error {
-	if atomic.CompareAndSwapInt32(&rc.readerClose, 0, 1) {
-		return os.Remove(rc.tmpFile.Name())
+func (c *writeCloser) CloseByError(err error) error {
+	if atomic.CompareAndSwapInt32(&c.writerClose, 0, 1) {
+		c.errOnce.Do(func() {
+			c.errChan <- err
+			close(c.errChan)
+		})
+		return nil
+	}
+	return errors.New("reader already closed")
+}
+
+func (c *readCloser) Close() error {
+	if atomic.CompareAndSwapInt32(&c.readerClose, 0, 1) {
+		name := c.tmpFile.Name()
+		err := c.tmpFile.Close()
+		_ = os.Remove(name)
+		return err
 	}
 	return errors.New("reader already closed")
 }
@@ -306,6 +329,9 @@ func (r *multiReader) Read(p []byte) (int, error) {
 		return 0, r.err
 	}
 
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
 	rc := r.curRc
 	var ok bool
 	for rc == nil {
@@ -314,32 +340,20 @@ func (r *multiReader) Read(p []byte) (int, error) {
 			if r.err == nil {
 				r.err = r.ctx.Err()
 			}
+			r.rcQueue.Close()
 			return 0, r.err
-		case rc, ok = <-r.rcChan:
+		case rc, ok = <-r.rcQueue.GetFromChan():
 			if !ok {
-				if r.err == nil {
-					r.err = io.EOF
-				}
-				r.cancel()
+				r.err = io.EOF
 				return 0, r.err
 			}
-		case <-r.done:
-			close(r.rcChan)
-			r.done = nil
 		}
-	}
-	if r.err != nil {
-		CloseIO(rc)
-		return 0, r.err
 	}
 
 	l, err := rc.Read(p)
 	if errors.Is(err, io.EOF) {
 		CloseIO(rc)
 		r.curRc = nil
-		if l <= 0 {
-			return r.Read(p)
-		}
 		return l, nil
 	}
 	if err == nil {
@@ -348,6 +362,5 @@ func (r *multiReader) Read(p []byte) (int, error) {
 	}
 
 	r.err = err
-	r.cancel()
-	return 0, err
+	return 0, r.err
 }

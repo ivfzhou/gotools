@@ -31,24 +31,27 @@ type bytesReader struct {
 	closed int
 }
 
-func (r *bytesReader) Close() error { r.closed++; return nil }
-
 func ExampleNewWriteAtReader() {
 	writeAtCloser, readCloser := gotools.NewWriteAtReader()
 
 	// 并发写入数据
 	go func() {
-		writeAtCloser.WriteAt(nil, 0)
+		_, _ = writeAtCloser.WriteAt(nil, 0)
+
+		// 发生错误时关闭
+		_ = writeAtCloser.CloseByError(nil)
 	}()
+
 	// 写完close
-	writeAtCloser.Close()
+	_ = writeAtCloser.Close()
 
 	// 同时读出写入的数据
 	go func() {
-		readCloser.Read(nil)
+		_, _ = readCloser.Read(nil)
 	}()
+
 	// 读完close
-	readCloser.Close()
+	_ = readCloser.Close()
 }
 
 func TestNewWriteAtReader(t *testing.T) {
@@ -77,7 +80,7 @@ func TestNewWriteAtReader(t *testing.T) {
 		defer func() {
 			err := writeAtCloser.Close()
 			if err != nil {
-				t.Error("err is not nil", err)
+				t.Error("io: err is not nil", err)
 			}
 		}()
 		wgi := &sync.WaitGroup{}
@@ -93,10 +96,10 @@ func TestNewWriteAtReader(t *testing.T) {
 					of := off * gap
 					n, err := writeAtCloser.WriteAt(file[of:of+f], of)
 					if err != nil {
-						t.Error("err is not nil", err)
+						t.Error("io: err is not nil", err)
 					}
 					if int64(n) != f {
-						t.Error("write len != bytes len", n, f)
+						t.Error("io: write len != bytes len", n, f)
 					}
 				}(f, off)
 			}
@@ -111,15 +114,15 @@ func TestNewWriteAtReader(t *testing.T) {
 		defer func() {
 			err := readCloser.Close()
 			if err != nil {
-				t.Error("err is not nil", err)
+				t.Error("io: err is not nil", err)
 			}
 		}()
-		now := time.Now()
+		// now := time.Now()
 		_, err := io.Copy(buf, readCloser)
 		if err != nil {
 			t.Error(err)
 		}
-		t.Logf("NewWriteAtReader read speed %dbytes/s", int(float64(fileTotalSize)/time.Since(now).Seconds()))
+		// t.Logf("NewWriteAtReader read speed %dbytes/s", int(float64(fileTotalSize)/time.Since(now).Seconds()))
 	}()
 
 	wg.Wait()
@@ -127,85 +130,18 @@ func TestNewWriteAtReader(t *testing.T) {
 	l1 := len(res)
 	l2 := l1 != len(file)
 	if l2 {
-		t.Error("length mot match", l1, len(file))
+		t.Error("io: length mot match", l1, len(file))
 	}
 	for i, v := range res {
 		if file[i] != v {
-			t.Error("not match", file[i], v, i)
+			t.Error("io: not match", file[i], v, i)
 		}
 	}
-}
-
-func TestNewMultiReadCloserToWriter(t *testing.T) {
-	readerNum := 10000
-	length := 10
-	m := make(map[int]struct{}, readerNum)
-	lock := &sync.Mutex{}
-	writer := func(order int, p []byte) {
-		if len(p) != 10 {
-			t.Error("p len not match", len(p))
-		}
-		s := string(p)
-		if s != "0123456789" {
-			t.Error("bytes unexpected", s)
-		}
-		lock.Lock()
-		_, ok := m[order]
-		if ok {
-			t.Error("unexpected order", order)
-		}
-		m[order] = struct{}{}
-		lock.Unlock()
-	}
-	ctx := context.Background()
-	rs := make([]*bytesReader, readerNum)
-	send, wait := gotools.NewMultiReadCloserToWriter(ctx, writer)
-	for i := 0; i < readerNum; i++ {
-		reader := &bytesReader{Reader: bytes.NewReader([]byte("0123456789"))}
-		rs[i] = reader
-		send(length, i, reader)
-	}
-	err := wait()
-	if err != nil {
-		t.Error("don't want error", err)
-	}
-	for i := range rs {
-		if rs[i].closed != 1 {
-			t.Error("reader doesn't close", rs[i].closed)
-		}
-	}
-	count := len(m)
-	if count != readerNum {
-		t.Error("reader numbers not match", count)
-	}
-}
-
-func TestCopyFile(t *testing.T) {
-	fileSize := int64(13)
-	dest := `testdata/copyfile_test`
-	err := gotools.CopyFile(`testdata/copyfile`, dest)
-	if err != nil {
-		t.Error("unexpected error", err)
-	}
-	info, err := os.Stat(dest)
-	if err != nil {
-		t.Error("unexpected error", err)
-	}
-	if info.IsDir() {
-		t.Error("not a file")
-	}
-	if info.Name() != filepath.Base(dest) {
-		t.Error("file name mistake", info.Name())
-	}
-	if info.Size() != fileSize {
-		t.Error("file size mistake", info.Size())
-	}
-	_ = os.Remove(dest)
 }
 
 func TestNewMultiReadCloserToReader(t *testing.T) {
 	ctx := context.Background()
-	length := 80*1024*1024 + rand.Intn(1025)
+	length := 500*1024*1024 + rand.Intn(1025)
 	data := make([]byte, length)
 	for i := 0; i < length; i++ {
 		data[i] = byte(rand.Intn(255))
@@ -233,27 +169,95 @@ func TestNewMultiReadCloserToReader(t *testing.T) {
 				residue -= l
 			}
 			rcs = append(rcs, rc)
-			if rand.Intn(3) <= 0 {
-				time.Sleep(time.Millisecond * time.Duration(100+rand.Intn(5000)))
-			}
 			if err := add(rc); err != nil {
-				t.Error("unexpected error", err)
+				t.Error("io: unexpected error", err)
 			}
 		}
 		endAdd()
 	}()
+	// now := time.Now()
 	bs, err := io.ReadAll(r)
+	// t.Logf("reader speed %vbytes/s", int(float64(length)/time.Since(now).Seconds()))
 	if err != nil {
-		t.Error("unexpected error", err)
+		t.Error("io: unexpected error", err)
 	}
 	if len(data) != len(bs) {
-		t.Error("bytes length not match", len(data), len(bs))
+		t.Error("io: bytes length not match", len(data), len(bs))
 	} else if bytes.Compare(data, bs) != 0 {
-		t.Error("bytes does not compared")
+		t.Error("io: bytes does not compared")
 	}
 	for i := range rcs {
 		if rcs[i].(*bytesReader).closed <= 0 {
-			t.Error("reader not closed", i)
+			t.Error("io: reader not closed", i)
 		}
 	}
 }
+
+func TestNewMultiReadCloserToWriter(t *testing.T) {
+	readerNum := 10000
+	length := 10
+	m := make(map[int]struct{}, readerNum)
+	lock := &sync.Mutex{}
+	writer := func(order int, p []byte) {
+		if len(p) != 10 {
+			t.Error("io: p len not match", len(p))
+		}
+		s := string(p)
+		if s != "0123456789" {
+			t.Error("io: bytes unexpected", s)
+		}
+		lock.Lock()
+		_, ok := m[order]
+		if ok {
+			t.Error("io: unexpected order", order)
+		}
+		m[order] = struct{}{}
+		lock.Unlock()
+	}
+	ctx := context.Background()
+	rs := make([]*bytesReader, readerNum)
+	send, wait := gotools.NewMultiReadCloserToWriter(ctx, writer)
+	for i := 0; i < readerNum; i++ {
+		reader := &bytesReader{Reader: bytes.NewReader([]byte("0123456789"))}
+		rs[i] = reader
+		send(length, i, reader)
+	}
+	err := wait()
+	if err != nil {
+		t.Error("io: don't want error", err)
+	}
+	for i := range rs {
+		if rs[i].closed != 1 {
+			t.Error("io: reader doesn't close", rs[i].closed)
+		}
+	}
+	count := len(m)
+	if count != readerNum {
+		t.Error("io: reader numbers not match", count)
+	}
+}
+
+func TestCopyFile(t *testing.T) {
+	fileSize := int64(13)
+	dest := `testdata/copyfile_test`
+	err := gotools.CopyFile(`testdata/copyfile`, dest)
+	if err != nil {
+		t.Error("if: unexpected error", err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Error("if: unexpected error", err)
+	}
+	if info.IsDir() {
+		t.Error("if: not a file")
+	}
+	if info.Name() != filepath.Base(dest) {
+		t.Error("if: file name mistake", info.Name())
+	}
+	if info.Size() != fileSize {
+		t.Error("if: file size mistake", info.Size())
+	}
+	_ = os.Remove(dest)
+}
+
+func (r *bytesReader) Close() error { r.closed++; return nil }
