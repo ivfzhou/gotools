@@ -1,6 +1,3 @@
-//go:build linux
-// +build linux
-
 package gotools_test
 
 import (
@@ -8,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools/v2"
+	"gitee.com/ivfzhou/gotools/v3"
 )
 
 func TestRunCommandAndPrompt(t *testing.T) {

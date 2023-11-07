@@ -32,11 +32,11 @@ type WriteAtCloser interface {
 }
 
 type writeAtReader struct {
-	err         error
 	tmpFile     *os.File
-	errChan     chan error
+	writerDone  chan struct{}
+	writerErr   error
+	readerErr   error
 	cursor      int64
-	errOnce     sync.Once
 	axisMarker  AxisMarker
 	notify      chan struct{}
 	readerClose int32
@@ -72,9 +72,9 @@ func NewWriteAtReader() (WriteAtCloser, io.ReadCloser) {
 		panic(err)
 	}
 	wr := &writeAtReader{
-		tmpFile: temp,
-		errChan: make(chan error),
-		notify:  make(chan struct{}, 1),
+		tmpFile:    temp,
+		writerDone: make(chan struct{}),
+		notify:     make(chan struct{}, 1),
 	}
 	return &writeCloser{wr}, &readCloser{wr}
 }
@@ -223,7 +223,7 @@ func CloseIO(c io.Closer) {
 
 func (c *writeCloser) Close() error {
 	if atomic.CompareAndSwapInt32(&c.writerClose, 0, 1) {
-		c.errOnce.Do(func() { close(c.errChan) })
+		close(c.writerDone)
 		return nil
 	}
 	return errors.New("reader already closed")
@@ -231,10 +231,8 @@ func (c *writeCloser) Close() error {
 
 func (c *writeCloser) CloseByError(err error) error {
 	if atomic.CompareAndSwapInt32(&c.writerClose, 0, 1) {
-		c.errOnce.Do(func() {
-			c.errChan <- err
-			close(c.errChan)
-		})
+		c.writerErr = err
+		close(c.writerDone)
 		return nil
 	}
 	return errors.New("reader already closed")
@@ -251,20 +249,25 @@ func (c *readCloser) Close() error {
 }
 
 func (wr *writeAtReader) WriteAt(p []byte, off int64) (int, error) {
-	if atomic.LoadInt32(&wr.writerClose) > 0 {
-		return 0, errors.New("writer was closed")
+	if len(p) <= 0 {
+		return 0, nil
 	}
+
 	length := len(p)
 	begin := off
 	for {
-		select {
-		case <-wr.errChan:
-			return 0, wr.err
-		default:
+		if atomic.LoadInt32(&wr.writerClose) > 0 {
+			return 0, errors.New("writer was closed")
+		}
+		if wr.writerErr != nil {
+			return 0, wr.writerErr
+		}
+		if wr.readerErr != nil {
+			return 0, wr.readerErr
 		}
 		l, err := wr.tmpFile.WriteAt(p, off)
 		if err != nil {
-			wr.errOnce.Do(func() { wr.err = err; close(wr.errChan) })
+			wr.writerErr = err
 			return l, err
 		}
 		if l == len(p) {
@@ -284,18 +287,23 @@ func (wr *writeAtReader) WriteAt(p []byte, off int64) (int, error) {
 }
 
 func (wr *writeAtReader) Read(p []byte) (int, error) {
-	if atomic.LoadInt32(&wr.readerClose) > 0 {
-		return 0, errors.New("reader was closed")
-	}
 	if len(p) <= 0 {
 		return 0, nil
 	}
+
 	for {
+		if atomic.LoadInt32(&wr.readerClose) > 0 {
+			return 0, errors.New("reader was closed")
+		}
+		if wr.writerErr != nil {
+			return 0, wr.writerErr
+		}
+		if wr.readerErr != nil {
+			return 0, wr.readerErr
+		}
+
 		select {
-		case <-wr.errChan:
-			if wr.err != nil {
-				return 0, wr.err
-			}
+		case <-wr.writerDone:
 			return wr.tmpFile.Read(p)
 		default:
 		}
@@ -310,7 +318,7 @@ func (wr *writeAtReader) Read(p []byte) (int, error) {
 			}
 			n, err := wr.tmpFile.Read(p)
 			if err != nil && !errors.Is(err, io.EOF) {
-				wr.errOnce.Do(func() { wr.err = err; close(wr.errChan) })
+				wr.readerErr = err
 				return n, err
 			}
 			atomic.AddInt64(&wr.cursor, int64(n))
@@ -319,7 +327,7 @@ func (wr *writeAtReader) Read(p []byte) (int, error) {
 
 		select {
 		case <-wr.notify:
-		case <-wr.errChan:
+		case <-wr.writerDone:
 		}
 	}
 }

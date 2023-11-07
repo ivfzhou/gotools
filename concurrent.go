@@ -23,132 +23,152 @@ import (
 	"time"
 )
 
-// RunConcurrently 并发运行fn，但有error发生时终止运行。
-func RunConcurrently(ctx context.Context, fn ...func(context.Context) error) (wait func() error) {
+// RunConcurrently 并发运行fn，一旦有error发生终止运行。
+func RunConcurrently(ctx context.Context, fn ...func(context.Context) error) (wait func(fastExit bool) error) {
+	if len(fn) <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var err error
 	select {
 	case <-ctx.Done():
-		return func() error {
-			err := ctx.Err()
-			if err == nil {
-				err = context.Canceled
-			}
+		err = ctx.Err()
+		if err == nil {
+			err = context.Canceled
+		}
+		return func(bool) error {
 			return err
 		}
 	default:
 	}
+
 	ctx, cancel := context.WithCancel(ctx)
-	var (
-		returnErr error
-		cancelErr error
-	)
-	wg := sync.WaitGroup{}
-	errOnce := &sync.Once{}
+	wg := &sync.WaitGroup{}
+	lock := &sync.Mutex{}
 	wg.Add(len(fn))
 	for _, f := range fn {
+		if f == nil {
+			panic("fn can't be nil")
+		}
 		go func(f func(context.Context) error) {
-			var err error
+			var ferr error
 			defer func() {
-				wg.Done()
 				if p := recover(); p != nil {
-					err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
+					ferr = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
 				}
-				if err != nil {
-					cancel()
-					if !errors.Is(err, context.Canceled) {
-						errOnce.Do(func() { returnErr = err })
+				if ferr != nil && !errors.Is(ferr, context.Canceled) {
+					lock.Lock()
+					if err == nil || errors.Is(err, context.Canceled) {
+						err = ferr
 					}
+					lock.Unlock()
+					cancel()
 				}
+				wg.Done()
 			}()
 			select {
 			case <-ctx.Done():
-				cancelErr = ctx.Err()
-				if cancelErr == nil {
-					cancelErr = context.Canceled
+				lock.Lock()
+				if ctxErr := ctx.Err(); ctxErr != nil && err == nil {
+					err = ctxErr
 				}
+				lock.Unlock()
 			default:
-				err = f(ctx)
+				ferr = f(ctx)
 			}
 		}(f)
 	}
-	return func() error {
+	go func() {
 		wg.Wait()
 		cancel()
-		if returnErr != nil {
-			return returnErr
+	}()
+	return func(fastExit bool) error {
+		if fastExit {
+			select {
+			case <-ctx.Done():
+				return err
+			}
 		}
-		return cancelErr
+		wg.Wait()
+		return err
 	}
 }
 
 // RunSequentially 依次运行fn，当有error发生时停止后续fn运行。
-func RunSequentially(ctx context.Context, fn ...func(context.Context) error) (wait func() error) {
+func RunSequentially(ctx context.Context, fn ...func(context.Context) error) error {
+	if len(fn) <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	select {
 	case <-ctx.Done():
-		return func() error {
-			err := ctx.Err()
-			if err == nil {
-				err = context.Canceled
-			}
-			return err
+		err := ctx.Err()
+		if err == nil {
+			err = context.Canceled
 		}
+		return err
 	default:
 	}
-	var returnErr error
-	notify := make(chan struct{})
-	go func() {
-		for _, f := range fn {
-			select {
-			case <-ctx.Done():
-				returnErr = ctx.Err()
-				if returnErr == nil {
-					returnErr = context.Canceled
-				}
-				close(notify)
-			default:
+
+	fnWrapper := func(f func(ctx context.Context) error) (err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
 			}
-			err := func() (err error) {
-				defer func() {
-					if p := recover(); p != nil {
-						err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
-					}
-				}()
-				err = f(ctx)
-				return
-			}()
-			if err != nil {
-				returnErr = err
-				close(notify)
-				return
-			}
+		}()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
-		close(notify)
-	}()
-	return func() error {
-		<-notify
-		return returnErr
+		err = f(ctx)
+		return
 	}
+	for _, f := range fn {
+		if f == nil {
+			panic("fn can't be nil")
+		}
+		err := fnWrapper(f)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// NewRunner 该函数提供同时运行max个协程fn，一旦fn发生error便终止fn运行。
+// NewRunner 该函数提供同时最多运行max个协程fn，一旦fn发生error便终止fn运行。
 //
 // max小于等于0表示不限制协程数。
 //
 // 朝返回的run函数中添加fn，若block为true表示正在运行的任务数已达到max则会阻塞。
 //
-// add函数返回error为任务fn返回的第一个error，与wait函数返回的error为同一个。
+// run函数返回error为任务fn返回的第一个error，与wait函数返回的error为同一个。
 //
 // 注意请在add完所有任务后调用wait。
 func NewRunner[T any](ctx context.Context, max int, fn func(context.Context, T) error) (
-	run func(t T, block bool) error, wait func() error) {
+	run func(t T, block bool) error, wait func(fastExit bool) error) {
 
-	var returnErr error
+	if fn == nil {
+		panic("fn can't be nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var err error
 	select {
 	case <-ctx.Done():
-		returnErr = ctx.Err()
-		if returnErr == nil {
-			returnErr = context.Canceled
+		err = ctx.Err()
+		if err == nil {
+			err = context.Canceled
 		}
-		return func(t T, block bool) error { return returnErr }, func() error { return returnErr }
+		return func(t T, block bool) error { return err }, func(bool) error { return err }
 	default:
 	}
 
@@ -157,19 +177,22 @@ func NewRunner[T any](ctx context.Context, max int, fn func(context.Context, T) 
 		limiter = make(chan struct{}, max)
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	errOnce := &sync.Once{}
 	wg := sync.WaitGroup{}
-	var cancelErr error
+	once := &sync.Once{}
+	lock := &sync.Mutex{}
 	fnWrapper := func(t T) {
-		var err error
+		var ferr error
 		defer func() {
 			if p := recover(); p != nil {
-				err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
+				ferr = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
 			}
-			if err != nil {
-				if !errors.Is(err, context.Canceled) {
-					errOnce.Do(func() { returnErr = err })
+
+			if ferr != nil && !errors.Is(ferr, context.Canceled) {
+				lock.Lock()
+				if err == nil || errors.Is(err, context.Canceled) {
+					err = ferr
 				}
+				lock.Unlock()
 				cancel()
 			}
 			if limiter != nil {
@@ -177,46 +200,34 @@ func NewRunner[T any](ctx context.Context, max int, fn func(context.Context, T) 
 			}
 			wg.Done()
 		}()
-		select {
-		case <-ctx.Done():
-			ctxErr := ctx.Err()
-			if ctxErr != nil && cancelErr == nil {
-				cancelErr = ctxErr
-			}
-		default:
-			err = fn(ctx, t)
-		}
+		ferr = fn(ctx, t)
 	}
 	run = func(t T, block bool) error {
 		wg.Add(1)
 		if block && limiter != nil {
 			select {
 			case <-ctx.Done():
-				defer wg.Done()
-				if returnErr != nil {
-					return returnErr
+				lock.Lock()
+				if ctxErr := ctx.Err(); ctxErr != nil && err == nil {
+					err = ctxErr
 				}
-				if cancelErr != nil {
-					return cancelErr
-				}
-				ctxErr := ctx.Err()
-				if ctxErr != nil {
-					cancelErr = ctxErr
-				}
-				return cancelErr
+				lock.Unlock()
+				wg.Done()
+				return err
 			case limiter <- struct{}{}:
 			}
 			go fnWrapper(t)
-			return returnErr
+			return err
 		}
 		go func() {
 			if limiter != nil {
 				select {
 				case <-ctx.Done():
-					ctxErr := ctx.Err()
-					if ctxErr != nil && cancelErr == nil {
-						cancelErr = ctxErr
+					lock.Lock()
+					if ctxErr := ctx.Err(); ctxErr != nil && err == nil {
+						err = ctxErr
 					}
+					lock.Unlock()
 					wg.Done()
 					return
 				case limiter <- struct{}{}:
@@ -225,102 +236,217 @@ func NewRunner[T any](ctx context.Context, max int, fn func(context.Context, T) 
 			fnWrapper(t)
 		}()
 
-		if returnErr != nil {
-			return returnErr
-		}
-		return cancelErr
+		return err
 	}
-	wait = func() error {
+	wait = func(fastExit bool) error {
+		once.Do(func() {
+			go func() {
+				wg.Wait()
+				cancel()
+			}()
+		})
+		if fastExit {
+			select {
+			case <-ctx.Done():
+				return err
+			}
+		}
 		wg.Wait()
-		if returnErr != nil {
-			return returnErr
-		}
-		return cancelErr
+		return err
 	}
+
 	return
 }
 
-// Run 并发将jobs传递给fn函数运行，一旦发生error便立即返回该error，并结束其它协程。
-func Run[T any](ctx context.Context, fn func(context.Context, T) error, jobs ...T) error {
+// RunData 并发将jobs传递给fn函数运行，一旦发生error便立即返回该error，并结束其它协程。
+func RunData[T any](ctx context.Context, fn func(context.Context, T) error, fastExit bool, jobs ...T) error {
 	if len(jobs) <= 0 {
 		return nil
 	}
+	if fn == nil {
+		panic("fn is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var err error
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+		if err == nil {
+			err = context.Canceled
+		}
+		return err
+	default:
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	wg := &sync.WaitGroup{}
-	var (
-		returnErr error
-		cancelErr error
-	)
-	errOnce := &sync.Once{}
+	lock := &sync.Mutex{}
+	fnWrapper := func(job *T) {
+		defer wg.Done()
+		select {
+		case <-ctx.Done():
+			lock.Lock()
+			if ctxErr := ctx.Err(); ctxErr != nil && err == nil {
+				err = ctxErr
+			}
+			lock.Unlock()
+			return
+		default:
+		}
+		var ferr error
+		defer func() {
+			if p := recover(); p != nil {
+				ferr = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
+			}
+			if ferr != nil && !errors.Is(ferr, context.Canceled) {
+				lock.Lock()
+				if err == nil || errors.Is(err, context.Canceled) {
+					err = ferr
+				}
+				lock.Unlock()
+				cancel()
+			}
+		}()
+		ferr = fn(ctx, *job)
+	}
 	for i := range jobs {
 		wg.Add(1)
-		go func(t *T) {
-			defer wg.Done()
-			select {
-			case <-ctx.Done():
-				cancelErr = ctx.Err()
-				if cancelErr == nil {
-					cancelErr = context.Canceled
-				}
-				return
-			default:
-			}
-			var err error
-			defer func() {
-				if p := recover(); p != nil {
-					err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
-				}
-				if err != nil {
-					cancel()
-					if !errors.Is(err, context.Canceled) {
-						errOnce.Do(func() { returnErr = err })
-					}
-				}
-			}()
-			err = fn(ctx, *t)
-		}(&jobs[i])
+		fnWrapper(&jobs[i])
 	}
-	wg.Wait()
 
-	if returnErr != nil {
-		return returnErr
+	go func() {
+		wg.Wait()
+		cancel()
+	}()
+
+	if fastExit {
+		select {
+		case <-ctx.Done():
+			return err
+		}
 	}
-	return cancelErr
+
+	wg.Wait()
+	return err
 }
 
-// RunPipeline 将每个jobs依次递给steps函数处理。一旦某个step发生error或者panic，StartProcess立即返回该error，
-// 并及时结束其他StartProcess开启的goroutine，也不开启新的goroutine运行step。
+// RunPipeline 将每个jobs依次递给steps函数处理。一旦某个step发生error或者panic，立即返回该error，并及时结束其他协程。
+// 除非stopWhenErr为false，则只是终止该job往下一个step投递。
 //
 // 一个job最多在一个step中运行一次，且一个job一定是依次序递给steps，前一个step处理完毕才会给下一个step处理。
 //
 // 每个step并发运行jobs。
 //
-// 等待所有goroutine运行结束才返回，或者ctx被cancel时也将及时结束开启的goroutine后返回。
+// 等待所有jobs处理结束时会close successCh、errCh，或者ctx被cancel时也将及时结束开启的goroutine后返回。
 //
-// 因被ctx cancel而结束时函数返回nil。
+// 从successCh和errCh中获取成功跑完所有step的job和是否发生error。
 //
 // 若steps中含有nil将会panic。
-func RunPipeline[T any](ctx context.Context, jobs []T, steps ...func(context.Context, T) error) error {
+func RunPipeline[T any](ctx context.Context, jobs []T, stopWhenErr bool, steps ...func(context.Context, T) error) (
+	successCh <-chan T, errCh <-chan error) {
+
+	tch := make(chan T, len(jobs))
+	successCh = tch
 	if len(steps) <= 0 || len(jobs) <= 0 {
-		return nil
+		close(tch)
+		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	ch := make(chan *T, len(jobs))
+	ch := make(chan T, len(jobs))
 	go func() {
 		for i := range jobs {
-			ch <- &jobs[i]
+			ch <- jobs[i]
 		}
 		close(ch)
 	}()
 	errChans := make([]<-chan error, len(steps))
-	var nextCh <-chan *T = ch
+	var nextCh <-chan T = ch
 	for i, step := range steps {
-		nextCh, errChans[i] = startStep(ctx, step, cancel, nextCh)
+		if step == nil {
+			panic("steps can't be nil")
+		}
+		nextCh, errChans[i] = startStep(ctx, step, cancel, nextCh, stopWhenErr)
+	}
+	go func() {
+		for t := range nextCh {
+			tch <- t
+		}
+		close(tch)
+		cancel()
+	}()
+
+	return successCh, ListenChan(errChans...)
+}
+
+// NewPipelineRunner 形同RunPipeline，不同在于使用push推送job。step返回true表示传递给下一个step处理。
+func NewPipelineRunner[T any](ctx context.Context, steps ...func(context.Context, T) bool) (
+	push func(T) bool, successCh <-chan T, endPush func()) {
+
+	if len(steps) <= 0 {
+		ch := make(chan T)
+		close(ch)
+		return func(t T) bool { return false }, ch, func() {}
 	}
 
-	return <-ListenChan(errChans...)
+	stepWrapper := func(ctx context.Context, f func(context.Context, T) bool, dataChan <-chan T) <-chan T {
+		ch := make(chan T, cap(dataChan))
+		go func() {
+			wg := &sync.WaitGroup{}
+			defer func() {
+				wg.Wait()
+				close(ch)
+			}()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case t, ok := <-dataChan:
+					if !ok {
+						return
+					}
+					wg.Add(1)
+					go func(t T) {
+						defer wg.Done()
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						var next bool
+						defer func() {
+							if p := recover(); p != nil {
+								next = false
+							}
+							if next {
+								ch <- t
+							}
+						}()
+						next = f(ctx, t)
+					}(t)
+				}
+			}
+		}()
+		return ch
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	jobQueue := &Queue[T]{}
+	nextCh := jobQueue.GetFromChan()
+	for i := range steps {
+		nextCh = stepWrapper(ctx, steps[i], nextCh)
+	}
+
+	return jobQueue.Push, nextCh, jobQueue.Close
 }
 
 // ListenChan 监听chans，一旦有一个chan激活便立即将T发送给ch，并close ch。
@@ -356,7 +482,6 @@ func ListenChan[T any](chans ...<-chan T) (ch <-chan T) {
 				scs = append(scs[:chosen], scs[chosen+1:]...)
 			} else {
 				reflect.ValueOf(tch).Send(recv)
-				close(tch)
 				return
 			}
 		}
@@ -407,14 +532,13 @@ func StackTrace() string {
 	return sb.String()
 }
 
-func startStep[T any](ctx context.Context, f func(context.Context, T) error, notify func(), dataChan <-chan *T) (
-	<-chan *T, <-chan error) {
+func startStep[T any](ctx context.Context, f func(context.Context, T) error, notify func(), dataChan <-chan T, stopWhenErr bool) (
+	<-chan T, <-chan error) {
 
-	ch := make(chan *T, cap(dataChan))
-	errCh := make(chan error, 1)
+	ch := make(chan T, cap(dataChan))
+	errCh := make(chan error, cap(dataChan))
 	go func() {
 		ctx, cancel := context.WithCancel(ctx)
-		errOnce := &sync.Once{}
 		wg := &sync.WaitGroup{}
 		defer func() {
 			wg.Wait()
@@ -431,7 +555,7 @@ func startStep[T any](ctx context.Context, f func(context.Context, T) error, not
 					return
 				}
 				wg.Add(1)
-				go func(t *T) {
+				go func(t T) {
 					defer wg.Done()
 					select {
 					case <-ctx.Done():
@@ -444,16 +568,18 @@ func startStep[T any](ctx context.Context, f func(context.Context, T) error, not
 							err = fmt.Errorf("panic: %v [recovered]\n%s\n", p, StackTrace())
 						}
 						if err != nil {
-							cancel()
-							notify()
+							if stopWhenErr {
+								cancel()
+								notify()
+							}
 							if !errors.Is(err, context.Canceled) {
-								errOnce.Do(func() { errCh <- err })
+								errCh <- err
 							}
 						} else {
 							ch <- t
 						}
 					}()
-					err = f(ctx, *t)
+					err = f(ctx, t)
 				}(t)
 			}
 		}

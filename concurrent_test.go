@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools/v2"
+	"gitee.com/ivfzhou/gotools/v3"
 )
 
 const jobCount = 256
@@ -40,7 +40,7 @@ func ExampleRunConcurrently() {
 		stock = nil
 		return nil
 	}
-	err := gotools.RunConcurrently(ctx, work1, work2)()
+	err := gotools.RunConcurrently(ctx, work1, work2)(false)
 	// check err
 	if err != nil {
 		return
@@ -56,7 +56,7 @@ func ExampleRunSequentially() {
 	first := func(context.Context) error { return nil }
 	then := func(context.Context) error { return nil }
 	last := func(context.Context) error { return nil }
-	err := gotools.RunSequentially(ctx, first, then, last)()
+	err := gotools.RunSequentially(ctx, first, then, last)
 	if err != nil {
 		// return err
 	}
@@ -88,7 +88,7 @@ func ExampleNewRunner() {
 	}
 
 	// wait all op done and check err
-	if err := wait(); err != nil {
+	if err := wait(true); err != nil {
 		// op occur err
 	}
 }
@@ -101,8 +101,10 @@ func ExampleRunPipeline() {
 	work1 := func(ctx context.Context, d *data) error { return nil }
 	work2 := func(ctx context.Context, d *data) error { return nil }
 
-	err := gotools.RunPipeline(ctx, jobs, work1, work2) // wait done
-	if err != nil {
+	succCh, errCh := gotools.RunPipeline(ctx, jobs, false, work1, work2)
+	select {
+	case <-succCh:
+	case <-errCh:
 		// return err
 	}
 }
@@ -118,7 +120,7 @@ func TestRunConcurrently(t *testing.T) {
 		}
 	}
 	wait := gotools.RunConcurrently(ctx, fns...)
-	err := wait()
+	err := wait(true)
 	if err != nil {
 		t.Error("concurrent: err is not nil", err)
 	}
@@ -141,7 +143,7 @@ func TestRunConcurrentlyErr(t *testing.T) {
 		}
 	}
 	wait := gotools.RunConcurrently(ctx, fns...)
-	werr := wait()
+	werr := wait(true)
 	if err == nil {
 		t.Error("concurrent: err is nil", err)
 	}
@@ -164,7 +166,7 @@ func TestRunConcurrentlyPanic(t *testing.T) {
 		}
 	}
 	wait := gotools.RunConcurrently(ctx, fns...)
-	werr := wait()
+	werr := wait(true)
 	if werr == nil {
 		t.Error("concurrent: err is nil", werr)
 	}
@@ -190,7 +192,7 @@ func TestRunSequentially(t *testing.T) {
 		}
 		x++
 		return nil
-	})()
+	})
 	if err != nil {
 		t.Error("concurrent: err is not nil", err)
 	}
@@ -212,7 +214,7 @@ func TestRunSequentiallyErr(t *testing.T) {
 	}, func(ctx context.Context) error {
 		x++
 		return nil
-	})()
+	})
 	if err == nil {
 		t.Error("concurrent: err is nil", err)
 	}
@@ -237,7 +239,7 @@ func TestRunSequentiallyPanic(t *testing.T) {
 	}, func(ctx context.Context) error {
 		x++
 		return nil
-	})()
+	})
 	if err == nil {
 		t.Error("concurrent: err is nil", err)
 	}
@@ -284,7 +286,7 @@ func TestRunRunner(t *testing.T) {
 			t.Error("concurrent: count is not zero", count)
 		}
 	}()
-	err := wait()
+	err := wait(true)
 	if err != nil {
 		t.Error("concurrent: err not nil", err)
 		return
@@ -310,7 +312,7 @@ func TestRunRunnerErr(t *testing.T) {
 		}(i)
 	}
 	time.Sleep(time.Millisecond * 100)
-	err2 := wait()
+	err2 := wait(true)
 	if err1 != err2 {
 		t.Error("concurrent: err not equal", err1, err2)
 	}
@@ -329,12 +331,48 @@ func TestRunRunnerPanic(t *testing.T) {
 	for i := 0; i < jobCount; i++ {
 		_ = add(i, false)
 	}
-	err := wait()
+	err := wait(true)
 	if err == nil {
 		t.Error("concurrent: err is nil", err)
 	}
 	if err != nil && !strings.Contains(err.Error(), perr.Error()) {
 		t.Error("concurrent: err is not equal", err)
+	}
+}
+
+func TestRunData(t *testing.T) {
+	ctx := context.Background()
+	count := int32(0)
+	err := gotools.RunData(ctx, func(ctx context.Context, t int32) error {
+		atomic.AddInt32(&count, t)
+		return nil
+	}, true, 1, 2, 3, 4)
+	if err != nil {
+		t.Error("concurrent: unexpected error", err)
+	}
+	if count != 10 {
+		t.Error("concurrent: unexpected count", count)
+	}
+
+	expectedErr := errors.New("expected error")
+	err = gotools.RunData(ctx, func(ctx context.Context, t int32) error {
+		if t == 3 {
+			return expectedErr
+		}
+		return nil
+	}, true, 1, 2, 3, 4)
+	if err != expectedErr {
+		t.Error("concurrent: unexpected error", err)
+	}
+
+	err = gotools.RunData(ctx, func(ctx context.Context, t int32) error {
+		if t == 3 {
+			panic(t)
+		}
+		return nil
+	}, true, 1, 2, 3, 4)
+	if err == nil || !strings.Contains(err.Error(), "3") {
+		t.Error("concurrent: unexpected error", err)
 	}
 }
 
@@ -364,9 +402,9 @@ func TestRunPipeline(t *testing.T) {
 			return errors.New("x != 1")
 		}
 	}
-	err := gotools.RunPipeline(ctx, jobs, work1, work2)
-	if err != nil {
-		t.Error("concurrent: unexpected error", err)
+	_, err := gotools.RunPipeline(ctx, jobs, false, work1, work2)
+	if e := <-err; e != nil {
+		t.Error("concurrent: unexpected error", e)
 	}
 	for _, v := range jobs {
 		if v.x != 2 {
@@ -396,12 +434,13 @@ func TestRunPipelineErr(t *testing.T) {
 		// t.Logf("work2 job %s", d.name)
 		return perr
 	}
-	err := gotools.RunPipeline(ctx, jobs, work1, work2)
-	if err == nil {
+	_, err := gotools.RunPipeline(ctx, jobs, true, work1, work2)
+	e := <-err
+	if e == nil {
 		t.Error("concurrent: err is nil")
 	}
-	if err != perr {
-		t.Error("concurrent: err not equal", err, perr)
+	if e != perr {
+		t.Error("concurrent: err not equal", e, perr)
 	}
 }
 
@@ -419,48 +458,81 @@ func TestRunPipelinePanic(t *testing.T) {
 	work2 := func(ctx context.Context, d *data) error {
 		panic(perr)
 	}
-	err := gotools.RunPipeline(ctx, jobs, work1, work2)
-	if err == nil {
+	_, err := gotools.RunPipeline(ctx, jobs, true, work1, work2)
+	e := <-err
+	if e == nil {
 		t.Error("concurrent: err is nil")
 	}
-	if err != nil && !strings.Contains(err.Error(), perr.Error()) {
+	if err != nil && !strings.Contains(e.Error(), perr.Error()) {
 		t.Error("concurrent: unexpected error", err)
 	}
 }
 
-func TestRun(t *testing.T) {
+func TestNewPipelineRunner(t *testing.T) {
 	ctx := context.Background()
-	count := int32(0)
-	err := gotools.Run(ctx, func(ctx context.Context, t int32) error {
-		atomic.AddInt32(&count, t)
-		return nil
-	}, 1, 2, 3, 4)
-	if err != nil {
-		t.Error("concurrent: unexpected error", err)
+	step1 := func(ctx context.Context, t *int) bool {
+		if *t == 0 {
+			*t = 1
+			return true
+		}
+		return false
 	}
-	if count != 10 {
-		t.Error("concurrent: unexpected count", count)
+	step2 := func(ctx context.Context, t *int) bool {
+		if *t == 1 {
+			*t = 2
+			return true
+		}
+		return false
+	}
+	step3 := func(ctx context.Context, t *int) bool {
+		if *t == 2 {
+			*t = 3
+			return true
+		}
+		return false
+	}
+	push, successCh, endPush := gotools.NewPipelineRunner(ctx, step1, step2, step3)
+
+	x := 0
+	push(&x)
+
+	select {
+	case n := <-successCh:
+		if *n != 3 {
+			t.Error("concurrent: x is unexpected", *n)
+		}
+	case <-time.NewTimer(3 * time.Second).C:
+		t.Error("concurrent: timeout")
 	}
 
-	expectedErr := errors.New("expected error")
-	err = gotools.Run(ctx, func(ctx context.Context, t int32) error {
-		if t == 3 {
-			return expectedErr
+	push(&x)
+	select {
+	case <-successCh:
+		t.Error("concurrent: unexpected")
+	default:
+		if x != 3 {
+			t.Error("concurrent: unexpected")
 		}
-		return nil
-	}, 1, 2, 3, 4)
-	if err != expectedErr {
-		t.Error("concurrent: unexpected error", err)
 	}
 
-	err = gotools.Run(ctx, func(ctx context.Context, t int32) error {
-		if t == 3 {
-			panic(t)
+	endPush()
+	x = 0
+	push(&x)
+	if x != 0 {
+		t.Error("concurrent: unexpected")
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	push, successCh, endPush = gotools.NewPipelineRunner(ctx, step1, step2, step3)
+	time.Sleep(time.Second)
+	cancel()
+	push(&x)
+	select {
+	case _, ok := <-successCh:
+		if ok {
+			t.Error("concurrent: unexpected")
 		}
-		return nil
-	}, 1, 2, 3, 4)
-	if err == nil || !strings.Contains(err.Error(), "3") {
-		t.Error("concurrent: unexpected error", err)
+	case <-time.NewTimer(3 * time.Second).C:
 	}
 }
 

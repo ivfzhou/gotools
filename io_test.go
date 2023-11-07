@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools/v2"
+	"gitee.com/ivfzhou/gotools/v3"
 )
 
 type bytesReader struct {

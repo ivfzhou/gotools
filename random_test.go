@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"gitee.com/ivfzhou/gotools/v2"
+	"gitee.com/ivfzhou/gotools/v3"
 )
 
 func TestRandomChars(t *testing.T) {
