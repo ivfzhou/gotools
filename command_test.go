@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools/v3"
+	"gitee.com/ivfzhou/gotools/v4"
 )
 
 func TestRunCommandAndPrompt(t *testing.T) {
-	stdout, stderr, err := gotools.RunCommandAndPrompt("testdata"+string(filepath.Separator)+"echo", "echo")
+	stdout, stderr, err := gotools.RunCommandAndPrompt("testdata"+string(filepath.Separator)+"echo", nil, "echo")
 	if err != nil {
 		t.Error("command: unexpected error", err)
 	}

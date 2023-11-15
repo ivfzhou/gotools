@@ -76,8 +76,8 @@ func (c *Command) Out() (stdout, stderr []byte, err error) {
 }
 
 // RunCommand 交互式运行cmd命令。
-func RunCommand(cmd string) *Command {
-	command := exec.Command(cmd)
+func RunCommand(bin string, args ...string) *Command {
+	command := exec.Command(bin, args...)
 	c := &Command{cmd: command, exit: make(chan struct{})}
 	command.Stderr = &c.stderr
 	command.Stdout = &c.stdout
@@ -98,8 +98,8 @@ func RunCommand(cmd string) *Command {
 }
 
 // RunCommandAndPrompt 运行命令并响应输入prompts。
-func RunCommandAndPrompt(cmd string, prompts ...string) (stdout, stderr []byte, err error) {
-	command := RunCommand(cmd)
+func RunCommandAndPrompt(bin string, args []string, prompts ...string) (stdout, stderr []byte, err error) {
+	command := RunCommand(bin, args...)
 	for _, v := range prompts {
 		if err = command.Write(v); err != nil {
 			return

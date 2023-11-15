@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"gitee.com/ivfzhou/gotools/v3"
+	"gitee.com/ivfzhou/gotools/v4"
 )
 
 const jobCount = 256

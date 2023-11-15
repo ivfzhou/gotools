@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"gitee.com/ivfzhou/gotools/v3"
+	"gitee.com/ivfzhou/gotools/v4"
 )
 
 func TestZip(t *testing.T) {

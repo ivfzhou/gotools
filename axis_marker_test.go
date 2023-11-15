@@ -15,7 +15,7 @@ package gotools_test
 import (
 	"testing"
 
-	"gitee.com/ivfzhou/gotools/v3"
+	"gitee.com/ivfzhou/gotools/v4"
 )
 
 func TestAxisMarker(t *testing.T) {
