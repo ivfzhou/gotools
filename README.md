@@ -1,5 +1,9 @@
 ##### 通用golang函数库
 
+```shell
+go get gitee.com/ivfzhou/gotools/v4@latest
+```
+
 ```golang
 // NewRunner 该函数提供同时最多运行max个协程fn，一旦fn发生error便终止fn运行。
 //
