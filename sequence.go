@@ -75,22 +75,8 @@ func FilterSlice[E any](sli []E, fn func(E) bool) []E {
 func DropSliceZero[E any](sli []E) []E {
 	list := make([]E, 0, len(sli))
 	for i := range sli {
-		val := reflect.ValueOf(sli[i])
-		if !val.IsValid() {
+		if IsZero(i) {
 			continue
-		}
-		if val.IsZero() {
-			continue
-		}
-		switch val.Kind() {
-		case reflect.Slice:
-			fallthrough
-		case reflect.Array:
-			fallthrough
-		case reflect.Map:
-			if val.Len() <= 0 {
-				continue
-			}
 		}
 		list = append(list, sli[i])
 	}
@@ -153,4 +139,34 @@ func Contains[E comparable](arr []E, elem E) bool {
 		}
 	}
 	return false
+}
+
+// IsZero 任何零值和空容器都返回 true
+func IsZero(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch v := v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr:
+		return v == 0
+	case float32, float64:
+		return v == 0.0
+	case bool:
+		return v == false
+	case string:
+		return len(v) == 0
+	case complex64, complex128:
+		return v == 0i
+	default:
+		fval := reflect.ValueOf(v)
+		switch fval.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			return fval.Len() == 0
+		case reflect.Interface, reflect.Ptr, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+			return fval.IsNil()
+		case reflect.Struct:
+			return fval.IsZero()
+		}
+	}
+	return true
 }
