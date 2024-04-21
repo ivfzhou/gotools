@@ -75,7 +75,7 @@ func FilterSlice[E any](sli []E, fn func(E) bool) []E {
 func DropSliceZero[E any](sli []E) []E {
 	list := make([]E, 0, len(sli))
 	for i := range sli {
-		if IsZero(i) {
+		if IsZero(sli[i]) {
 			continue
 		}
 		list = append(list, sli[i])
