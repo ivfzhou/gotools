@@ -62,6 +62,21 @@ func DistinctSlice[E comparable](sli []E) []E {
 	return list
 }
 
+func DistinctSliceByHash[E any](sli []E, hash func(E) string) []E {
+	list := make([]E, 0, len(sli))
+	m := make(map[string]struct{}, len(sli))
+	for i := range sli {
+		s := hash(sli[i])
+		_, ok := m[s]
+		if ok {
+			continue
+		}
+		m[s] = struct{}{}
+		list = append(list, sli[i])
+	}
+	return list
+}
+
 func FilterSlice[E any](sli []E, fn func(E) bool) []E {
 	list := make([]E, 0, len(sli))
 	for i := range sli {
